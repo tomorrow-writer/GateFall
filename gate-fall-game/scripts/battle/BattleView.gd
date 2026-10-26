@@ -26,9 +26,10 @@ var _born_at := {}  # unit id -> view clock when it split off
 var _fx: Array = []  # {kind, pos, t0, dur}
 var _clock := 0.0
 var _flash := 0.0  # full-screen flash when a special is cast
+var _flash_col := WAVE
 var _cutscene := 0.0  # remaining cutscene time
 var _cutscene_len := 0.0
-var _cutscene_label := ""
+var _cutscene_side = null  # Army whose general is casting
 
 
 func bind(s: BattleSim) -> void:
@@ -56,7 +57,8 @@ func handle_events(events: Array) -> void:
 			"hit":
 				_fx.append({"kind": "spark", "pos": Vector2(e.x, e.y - 8), "t0": _clock, "dur": 0.2})
 			"wavehit":
-				_fx.append({"kind": "burst", "pos": Vector2(e.x, e.y - 8), "t0": _clock, "dur": 0.4})
+				_fx.append({"kind": "burst", "pos": Vector2(e.x, e.y - 8), "t0": _clock, "dur": 0.4,
+						"col": _special_color(sim.get_side(e.get("by", "")))})
 			"die":
 				_died_at[e.id] = _clock
 				_fx.append({"kind": "poof", "pos": Vector2(e.x, e.y - 6), "t0": _clock, "dur": 0.35})
@@ -64,12 +66,21 @@ func handle_events(events: Array) -> void:
 				_born_at[e.id] = _clock
 			"cast":
 				_flash = 0.25
+				_flash_col = _special_color(sim.get_side(e.side))
 
 
-func start_cutscene(duration: float, label: String) -> void:
+## s: the casting Army (either side; the AI's casts get a cutscene too).
+func start_cutscene(duration: float, s) -> void:
 	_cutscene = duration
 	_cutscene_len = duration
-	_cutscene_label = label
+	_cutscene_side = s
+
+
+## Special's "color" from the config, light green if unset.
+func _special_color(s) -> Color:
+	if s == null or s.special.is_empty():
+		return WAVE
+	return Color(str(s.special.get("color", "73ff8c")))
 
 
 func _process(delta: float) -> void:
@@ -88,9 +99,9 @@ func _draw() -> void:
 	_draw_field()
 	if sim == null:
 		return
-	# Wave behind the units
+	# Wave behind the units (a cavalry charge rides over them, drawn below)
 	for s in sim.sides:
-		if not s.wave.is_empty():
+		if not s.wave.is_empty() and s.special.get("type", "wave") != "charge":
 			_draw_wave(s)
 	# Units back to front
 	var order: Array = []
@@ -100,11 +111,14 @@ func _draw() -> void:
 	order.sort_custom(func(a, b): return a.y < b.y)
 	for u in order:
 		_draw_unit(u)
+	for s in sim.sides:
+		if not s.wave.is_empty() and s.special.get("type", "wave") == "charge":
+			_draw_wave(s)
 	for f in _fx:
 		_draw_fx(f)
 	_draw_general_bars()
 	if _flash > 0.0:
-		draw_rect(Rect2(0, 0, 480, 270), Color(0.6, 1.0, 0.6, _flash * 1.6))
+		draw_rect(Rect2(0, 0, 480, 270), Color(_flash_col.lerp(Color.WHITE, 0.4), _flash * 1.6))
 	if _cutscene > 0.0:
 		_draw_cutscene()
 
@@ -142,10 +156,54 @@ func _draw_wave(s) -> void:
 		var t := 480.0 - x0
 		x0 = 480.0 - x1
 		x1 = t
-	draw_rect(Rect2(x0, 112, x1 - x0, 126), Color(WAVE, 0.35))
+	var col := _special_color(s)
+	if sp.get("type", "wave") == "charge":
+		_draw_charge(s, x0, x1, col)
+		return
+	draw_rect(Rect2(x0, 112, x1 - x0, 126), Color(col, 0.35))
 	for i in 7:
 		var cy := 120.0 + i * 18.0
-		draw_circle(Vector2(lerpf(x0, x1, 0.7) + sin(_clock * 20.0 + i) * 3.0, cy), 7.0, Color(WAVE, 0.7))
+		draw_circle(Vector2(lerpf(x0, x1, 0.7) + sin(_clock * 20.0 + i) * 3.0, cy), 7.0, Color(col, 0.7))
+
+
+## Cavalry charge: a row of placeholder horsemen galloping down the lane,
+## dust behind them, the lane itself faintly marked.
+func _draw_charge(s, x0: float, x1: float, col: Color) -> void:
+	var w: Dictionary = s.wave
+	var f := float(s.facing)
+	var half := float(s.special.get("lane_height", 40)) / 2.0
+	var ly := float(w.y)
+	var front := x1 if f > 0.0 else x0
+	var back := -40.0 if f > 0.0 else 520.0
+	# lane marker + dust trail
+	draw_rect(Rect2(0, ly - half, 480, half * 2.0), Color(col, 0.10))
+	draw_line(Vector2(0, ly - half), Vector2(480, ly - half), Color(col, 0.45), 1.0)
+	draw_line(Vector2(0, ly + half), Vector2(480, ly + half), Color(col, 0.45), 1.0)
+	var tx0 := minf(front, back)
+	draw_rect(Rect2(tx0, ly - half, absf(front - back), half * 2.0), Color(0.75, 0.62, 0.45, 0.18))
+	for i in 6:
+		var dx := front - f * (14.0 + i * 11.0)
+		draw_circle(Vector2(dx, ly - half + fmod(i * 17.0, half * 2.0) + 4.0), 5.0 + i, Color(0.8, 0.7, 0.55, 0.3 - i * 0.04))
+	# horsemen, rows staggered so the line reads as a charge
+	var rows := maxi(2, int(half * 2.0 / 15.0))
+	for i in rows:
+		var y := ly - half + (i + 0.5) * (half * 2.0 / rows) + 6.0
+		var x := front - f * (8.0 + (i % 2) * 7.0)
+		var gallop := absf(sin(_clock * 22.0 + i)) * 2.0
+		draw_set_transform(Vector2(x, y - gallop), 0.0, Vector2(1.4, 1.4))
+		_draw_horseman(Vector2.ZERO, f, col)
+		draw_set_transform(Vector2.ZERO)
+
+
+func _draw_horseman(p: Vector2, f: float, col: Color) -> void:
+	var horse := Color("6b4a32")
+	draw_rect(Rect2(p + Vector2(-8, -9), Vector2(16, 6)), horse)  # body
+	draw_rect(Rect2(p + Vector2(f * 6 - 2, -13), Vector2(5, 6)), horse)  # neck/head
+	draw_rect(Rect2(p + Vector2(-7, -3), Vector2(2, 3)), horse.darkened(0.3))  # legs
+	draw_rect(Rect2(p + Vector2(5, -3), Vector2(2, 3)), horse.darkened(0.3))
+	draw_rect(Rect2(p + Vector2(-3, -17), Vector2(6, 8)), KNIGHT)  # rider
+	draw_rect(Rect2(p + Vector2(-1, -19), Vector2(2, 2)), PLUME)
+	draw_line(p + Vector2(f * 2, -13), p + Vector2(f * 16, -15), col, 1.0)  # lance
 
 
 func _draw_unit(u) -> void:
@@ -294,11 +352,13 @@ func _draw_fx(f: Dictionary) -> void:
 		"spark":
 			draw_circle(f.pos, 2.0 + k * 2.0, Color(1, 0.95, 0.6, 1.0 - k))
 		"burst":
-			draw_arc(f.pos, 4.0 + k * 10.0, 0, TAU, 16, Color(WAVE, 1.0 - k), 2.0)
+			draw_arc(f.pos, 4.0 + k * 10.0, 0, TAU, 16, Color(f.get("col", WAVE), 1.0 - k), 2.0)
 		"poof":
 			draw_arc(f.pos, 3.0 + k * 9.0, 0, TAU, 12, Color(1, 1, 1, 0.8 * (1.0 - k)), 1.0)
 
 
+## Placeholder cutscene: the casting general slides in from its own edge,
+## scaled up, with the special's name on the other side.
 func _draw_cutscene() -> void:
 	var k := 1.0 - _cutscene / maxf(_cutscene_len, 0.001)  # 0 -> 1
 	draw_rect(Rect2(0, 0, 480, 270), Color(0, 0, 0, 0.55))
@@ -306,19 +366,25 @@ func _draw_cutscene() -> void:
 	var bar := 30.0 * minf(k * 4.0, 1.0)
 	draw_rect(Rect2(0, 0, 480, bar), Color(0, 0, 0))
 	draw_rect(Rect2(0, 270 - bar, 480, bar), Color(0, 0, 0))
-	# placeholder general: big slime-orb staff and cape
-	var gx := lerpf(-40.0, 150.0, minf(k * 3.0, 1.0))
-	var g := Vector2(gx, 170)
-	draw_colored_polygon(PackedVector2Array([g + Vector2(-14, -40), g + Vector2(14, -40), g + Vector2(22, 0), g + Vector2(-22, 0)]), Color("a02a2a"))
-	draw_rect(Rect2(g + Vector2(-10, -46), Vector2(20, 34)), Color("2f8a52"))
-	draw_circle(g + Vector2(0, -54), 9.0, Color("e8c8a8"))
-	draw_rect(Rect2(g + Vector2(-9, -64), Vector2(18, 6)), Color("7a4fb0"))
-	draw_line(g + Vector2(16, 0), g + Vector2(16, -78), Color("c9a46a"), 2.0)
-	var glow := 8.0 + sin(_clock * 18.0) * 2.0 + k * 6.0
-	draw_circle(g + Vector2(16, -84), glow, Color(WAVE, 0.5))
-	draw_circle(g + Vector2(16, -84), 6.0, Color(WAVE))
-	# title
+	var s = _cutscene_side
+	if s == null:
+		return
+	var col := _special_color(s)
+	var f := float(s.facing)
+	var slide := minf(k * 3.0, 1.0)
+	var gx := lerpf(-40.0, 150.0, slide) if f > 0.0 else lerpf(520.0, 330.0, slide)
+	var g := Vector2(gx, 200)
+	var glow := 14.0 + sin(_clock * 18.0) * 3.0 + k * 10.0
+	draw_circle(g + Vector2(0, -50), glow * 2.0, Color(col, 0.18))
+	var gen = sim.general_of(s.id)
+	if gen != null:
+		draw_set_transform(g, 0.0, Vector2(2.4, 2.4))
+		_draw_general(gen, Vector2.ZERO, 1.0, false)
+		draw_set_transform(Vector2.ZERO)
+	# title on the far side from the general
+	var label: String = s.special.get("label", "")
 	var font := ThemeDB.fallback_font
 	var size := 16
-	var tw := font.get_string_size(_cutscene_label, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x
-	draw_string(font, Vector2(470 - tw, 120), _cutscene_label, HORIZONTAL_ALIGNMENT_LEFT, -1, size, Color(WAVE))
+	var tw := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x
+	var tx := 470.0 - tw if f > 0.0 else 10.0
+	draw_string(font, Vector2(tx, 120), label, HORIZONTAL_ALIGNMENT_LEFT, -1, size, col)

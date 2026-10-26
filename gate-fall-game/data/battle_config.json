@@ -109,9 +109,12 @@
     }
   },
 
+  "_specials_note": "All specials sweep from the caster's edge (start_x) to end_x at speed, a band width px deep, hitting each enemy once. lane_height 0 = full field height; > 0 = a lane that tall, aimed by the caster (AI or best lane for the player). knockback = px survivors are pushed back. type/color are for BattleView.",
   "specials": {
     "emerald_slime_wave": {
       "label": "คลื่นสไลม์มรกต",
+      "type": "wave",
+      "color": "73ff8c",
       "mp_cost": 70,
       "damage": 3,
       "start_x": 30,
@@ -121,7 +124,37 @@
       "hit_flash": 0.3,
       "auto_cast_after": 3,
       "cutscene_time": 0.9
+    },
+    "_cavalry_note": "Knight general. run_sims 300/combo vs enemy AI (slime player, special on): line charge 46%, square charge 65%. mp_cost 85 = about one charge per battle; damage 10 / mp 70 dropped slime line-charge to 24%.",
+    "cavalry_charge": {
+      "label": "ทัพม้าบุกทะลวง",
+      "type": "charge",
+      "color": "f0c060",
+      "mp_cost": 85,
+      "damage": 7,
+      "lane_height": 44,
+      "knockback": 14,
+      "start_x": 0,
+      "speed": 300,
+      "width": 30,
+      "end_x": 520,
+      "hit_flash": 0.3,
+      "auto_cast_after": 3,
+      "cutscene_time": 0.9
     }
+  },
+
+  "_ai_note": "BattleAI (enemy side), see scripts/battle/BattleAI.gd. Every think_interval s: hit value per enemy = share of max HP taken + kill_bonus if it dies, general x general_weight. Cast when the best lane holds min_share of the value of hitting every enemy; full MP lowers it to full_mp_min_share; own general below danger_hp with enemies within danger_range: any hit, those enemies x danger_weight.",
+  "ai": {
+    "think_interval": 0.5,
+    "min_share": 0.35,
+    "full_mp_min_share": 0.15,
+    "kill_bonus": 1.0,
+    "general_weight": 10,
+    "danger_hp": 0.5,
+    "danger_range": 70,
+    "danger_weight": 3,
+    "lane_step": 6
   },
 
   "_sides_note": "Side order matters: units spawn interleaved in this order, and if both armies die on the same step the first side wins (prototype behaviour).",
@@ -152,7 +185,7 @@
       "spawn_jitter": [4, 4],
       "formation": "line",
       "order": "advance",
-      "special": "",
+      "special": "cavalry_charge",
       "general": "general_knight",
       "general_spot": [40, 176],
       "mp_start": 30,

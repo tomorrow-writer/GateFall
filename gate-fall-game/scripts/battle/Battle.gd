@@ -4,6 +4,8 @@
 ## BattleView and wires the HUD.
 ##
 ## Keys: 1 = charge, 2 = hold, Space = special, Enter = start / again.
+## A lane special (cavalry charge) fired by the player runs down the lane with
+## the most enemies (BattleSim.cast picks it).
 extends Node2D
 
 const BattleSim = preload("res://scripts/battle/BattleSim.gd")
@@ -150,7 +152,9 @@ func _new_sim() -> void:
 	if sim != null:
 		sim.dispose()
 	_seed = fixed_seed if fixed_seed > 0 else randi_range(1, 2147483646)
-	var overrides := {player_side: {"formation": formation, "order": order, "auto_cast": false}}
+	# The other side is the AI: BattleAI picks when (and where) its general casts.
+	var overrides := {player_side: {"formation": formation, "order": order, "auto_cast": false},
+			_enemy_side: {"ai": true}}
 	sim = BattleSim.new(cfg, overrides, BattleRng.new(_seed))
 	view.bind(sim)
 
@@ -208,7 +212,7 @@ func _cast_special() -> void:
 
 func _begin_cutscene(s) -> void:
 	_freeze = float(s.special.get("cutscene_time", 0.0))
-	view.start_cutscene(_freeze, s.special.get("label", ""))
+	view.start_cutscene(_freeze, s)
 
 
 # --- HUD ---------------------------------------------------------------------

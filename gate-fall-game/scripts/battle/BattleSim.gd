@@ -8,6 +8,14 @@
 ##           ...  # BattleView plays animations for e.type: hit, die, spawn, cast, wavehit, over
 ##   sim.cast("S")  # player presses the special button
 ##
+## Specials (cfg.specials) all move across the field from the caster's edge
+## and hit each enemy they pass once. "lane_height" 0 = full height (slime
+## wave); > 0 = a lane that tall, centred where the caster aims (knight
+## cavalry charge). "knockback" pushes survivors back. "type" is for the view.
+##
+## AI: a side with "ai" (config or override) gets a BattleAI brain that picks
+## when and where to cast. Same code for either side.
+##
 ## Nothing here is tied to a race: sides, units, orders and formations all come
 ## from the config, so either side can be the player (CLAUDE.md section 6).
 ##
@@ -24,6 +32,7 @@ extends RefCounted
 
 const BattleMath = preload("res://scripts/battle/BattleMath.gd")
 const BattleRng = preload("res://scripts/battle/BattleRng.gd")
+const BattleAI = preload("res://scripts/battle/BattleAI.gd")
 
 
 class Army:
@@ -48,7 +57,9 @@ class Army:
 	var auto_cast: bool
 	var mp: float
 	var mp_max: float
-	var wave: Dictionary  # active wave {x, hit}; empty = none
+	var wave: Dictionary  # active special {x, y (lane centre), hit}; empty = none
+	var brain: RefCounted = null  # BattleAI when the AI commands this side
+	var casts: int = 0  # specials fired this battle
 	# Index of the general in `units`, -1 = none (side loses when all units are gone).
 	# An index, not a Unit reference: Unit.side points back here, and a
 	# reference cycle would leak.
@@ -117,7 +128,9 @@ static func load_config(path: String = "res://data/battle_config.json") -> Dicti
 	return data
 
 
-## overrides: per side id, any of {"formation", "order", "auto_cast"}.
+## overrides: per side id, any of {"formation", "order", "auto_cast", "ai"}.
+##   auto_cast: fire the special as soon as it is ready (old sim baseline).
+##   ai: BattleAI decides when and where (enemy side in play and in run_sims).
 ## rng: share one BattleRng across battles to reproduce prototype simulate().
 func _init(config: Dictionary, overrides: Dictionary = {}, shared_rng: BattleRng = null) -> void:
 	cfg = config
@@ -140,6 +153,8 @@ func _init(config: Dictionary, overrides: Dictionary = {}, shared_rng: BattleRng
 		s.mp = float(sd.mp_start)
 		s.mp_max = float(sd.mp_max)
 		s.wave = {}
+		if bool(ov.get("ai", sd.get("ai", false))):
+			s.brain = BattleAI.new(s.id, cfg.get("ai", {}))
 		sides.append(s)
 
 	# PROTOTYPE: units spawn interleaved (S0, K0, S1, K1, ...) and each takes
@@ -205,8 +220,11 @@ func step(dt: float) -> Array:
 	for s in sides:
 		s.mp = minf(s.mp_max, s.mp + dt * s.mp_regen)
 	for s in sides:
-		if s.auto_cast and not s.special.is_empty() and s.mp >= float(s.special.mp_cost) \
-				and time > float(s.special.auto_cast_after) and s.wave.is_empty():
+		if s.brain != null:
+			var lane_y = s.brain.think(self, dt)
+			if lane_y != null:
+				cast(s.id, lane_y)
+		elif s.auto_cast and special_ready(s.id) and time > float(s.special.auto_cast_after):
 			cast(s.id)
 	for s in sides:
 		if not s.wave.is_empty():
@@ -349,16 +367,29 @@ func _clear_targets() -> void:
 
 
 ## Fire a side's special. Returns false if not ready.
-func cast(side_id: String) -> bool:
-	var s := get_side(side_id)
-	if over != "" or s == null or s.special.is_empty() or not s.wave.is_empty() \
-			or s.mp < float(s.special.mp_cost):
+## lane_y: where a lane special (lane_height > 0) runs; NAN = best lane now
+## (BattleAI.best_lane), so the player's one button aims sensibly.
+func cast(side_id: String, lane_y: float = NAN) -> bool:
+	if not special_ready(side_id):
 		return false
+	var s := get_side(side_id)
+	if is_nan(lane_y):
+		lane_y = BattleAI.best_lane(self, s, BattleAI.merged(cfg.get("ai", {}))).y \
+				if float(s.special.get("lane_height", 0)) > 0.0 \
+				else (float(_field.y_min) + float(_field.y_max)) / 2.0
 	s.mp -= float(s.special.mp_cost)
-	s.wave = {"x": float(s.special.start_x), "hit": {}}
+	s.casts += 1
+	s.wave = {"x": float(s.special.start_x), "y": lane_y, "hit": {}}
 	if record_events:
-		_events.append({"type": "cast", "side": s.id, "special": s.special})
+		_events.append({"type": "cast", "side": s.id, "special": s.special, "y": lane_y})
 	return true
+
+
+## True if the side has a special, enough MP, and none running.
+func special_ready(side_id: String) -> bool:
+	var s := get_side(side_id)
+	return over == "" and s != null and not s.special.is_empty() and s.wave.is_empty() \
+			and s.mp >= float(s.special.mp_cost)
 
 
 ## Alive units per side id (generals included), plus per unit kind.
@@ -469,8 +500,12 @@ func _step_wave(s: Army, dt: float, live: Array[Unit]) -> void:
 	w.x += float(sp.speed) * dt
 	var width := float(_field.width)
 	var band := float(sp.width)
+	var half := float(sp.get("lane_height", 0)) / 2.0
+	var kb := float(sp.get("knockback", 0))
 	for u in live:
 		if u.side != s and u.alive and not w.hit.has(u.id):
+			if half > 0.0 and absf(u.y - float(w.y)) > half:
+				continue
 			# Wave coordinates run from the caster's edge of the field.
 			var lx := u.x if s.facing == 1 else width - u.x
 			if lx < w.x and lx > w.x - band:
@@ -479,9 +514,11 @@ func _step_wave(s: Army, dt: float, live: Array[Unit]) -> void:
 				u.fx = float(sp.hit_flash)
 				if record_events:
 					_events.append({"type": "wavehit", "id": u.id, "x": u.x, "y": u.y,
-							"side": u.side.id, "dmg": float(sp.damage)})
+							"side": u.side.id, "by": s.id, "dmg": float(sp.damage)})
 				if u.hp <= 0.0:
 					_kill(u)
+				elif kb > 0.0:
+					u.x = clampf(u.x + float(s.facing) * kb, float(_field.x_min), float(_field.x_max))
 	if w.x > float(sp.end_x):
 		s.wave = {}
 
