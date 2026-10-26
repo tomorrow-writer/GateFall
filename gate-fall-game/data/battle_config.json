@@ -63,26 +63,30 @@
 
   "_orders_note": "advance = AI default from the prototype: walks in, no bonuses.",
   "orders": {
-    "charge":  { "atk_mult": 1.15, "take_mult": 1,    "mp_regen": 4 },
-    "hold":    { "atk_mult": 1,    "take_mult": 0.85, "mp_regen": 4.5, "hold_range": 70 },
-    "advance": { "atk_mult": 1,    "take_mult": 1,    "mp_regen": 4 }
+    "charge":  { "label": "บุก", "atk_mult": 1.15, "take_mult": 1,    "mp_regen": 4 },
+    "hold":    { "label": "ตั้งรับ", "atk_mult": 1,    "take_mult": 0.85, "mp_regen": 4.5, "hold_range": 70 },
+    "advance": { "label": "เดินหน้า", "atk_mult": 1,    "take_mult": 1,    "mp_regen": 4 }
   },
 
   "_formations_note": "Spots are for an army facing right (left side of the field); a side facing left mirrors x as width - x. flank = extra atk when flank_min or more allies hit the same target.",
   "formations": {
     "line": {
+      "label": "หน้ากระดาน",
       "atk": 1, "take": 1, "spd": 1,
       "layout": { "type": "spots", "spots": [[84,128],[84,152],[84,176],[84,200],[84,224],[110,128],[110,152],[110,176],[110,200],[110,224]] }
     },
     "wedge": {
+      "label": "หัวลูกศร",
       "atk": 1.12, "take": 1.1, "spd": 1.1,
       "layout": { "type": "spots", "spots": [[150,178],[126,165],[126,191],[102,152],[102,178],[102,204],[78,139],[78,165],[78,191],[78,217]] }
     },
     "square": {
+      "label": "ป้อมปราการ",
       "atk": 1, "take": 0.86, "spd": 0.75,
       "layout": { "type": "spots", "spots": [[92,146],[114,146],[136,146],[92,168],[114,168],[136,168],[92,190],[114,190],[136,190],[92,212]] }
     },
     "crescent": {
+      "label": "ปีกกา",
       "atk": 0.96, "take": 1.08, "spd": 1, "flank": 1.1, "flank_min": 2,
       "layout": { "type": "arc", "x": 78, "rx": 58, "y": 178, "ry": 56, "angle_start": -1.25, "angle_span": 2.5 }
     }
@@ -90,6 +94,7 @@
 
   "specials": {
     "emerald_slime_wave": {
+      "label": "คลื่นสไลม์มรกต",
       "mp_cost": 70,
       "damage": 3,
       "start_x": 30,
@@ -107,6 +112,7 @@
     {
       "id": "S",
       "name": "slime",
+      "label": "สไลม์",
       "unit": "slime_big",
       "count": 10,
       "facing": 1,
@@ -120,6 +126,7 @@
     {
       "id": "K",
       "name": "human",
+      "label": "อัศวิน",
       "unit": "knight",
       "count": 10,
       "facing": -1,

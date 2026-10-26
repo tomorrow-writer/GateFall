@@ -148,11 +148,11 @@ func _init(config: Dictionary, overrides: Dictionary = {}, shared_rng: BattleRng
 			units.append(u)
 
 
-## Advance the battle by dt seconds. Returns this step's events.
+## Advance the battle by dt seconds. Returns the events since the last step
+## (including a "cast" from calling cast() between steps).
 func step(dt: float) -> Array:
-	_events = []
 	if over != "":
-		return _events
+		return _take_events()
 	time += dt
 	var live: Array[Unit] = []
 	for u in units:
@@ -264,7 +264,20 @@ func step(dt: float) -> Array:
 		_clear_targets()
 		if record_events:
 			_events.append({"type": "over", "winner": over})
-	return _events
+	return _take_events()
+
+
+func _take_events() -> Array:
+	var out := _events
+	_events = []
+	return out
+
+
+## Change a side's order mid-battle (player presses charge / hold).
+func set_order(side_id: String, order_name: String) -> void:
+	var s := get_side(side_id)
+	if s != null and cfg.orders.has(order_name):
+		_apply_order(s, order_name)
 
 
 ## Call if a battle is abandoned before it ends (e.g. player quits).
