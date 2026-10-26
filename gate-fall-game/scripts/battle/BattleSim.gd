@@ -12,8 +12,13 @@
 ## from the config, so either side can be the player (CLAUDE.md section 6).
 ##
 ## Ported to match the prototype exactly, quirks included (marked PROTOTYPE).
-## Same seed -> same battle as the JS version. Don't "fix" these until the
-## Godot numbers have been checked against the prototype and committed.
+## With data/battle_config_prototype.json (no generals) the same seed gives the
+## same battle as the JS version; keep it that way so the core stays testable:
+##   godot --headless --script res://tools/run_sims.gd -- --config=res://data/battle_config_prototype.json --per-battle
+##
+## Generals (CLAUDE.md section 5): a side with "general" in the config fields a
+## general that hangs back behind its troops, fights when an enemy comes within
+## engage_range (or when its troops are gone), and the side loses when it falls.
 class_name BattleSim
 extends RefCounted
 
@@ -30,6 +35,10 @@ class Army:
 	var form_spd: float
 	var flank: float
 	var flank_min: int
+	# Formation roles toward generals (see formations in battle_config.json)
+	var general_pull: float  # < 1: enemy general looks closer when picking targets
+	var envelop: float  # > 0: troops swing this far above/below an enemy general
+	var leash: float  # > 0: troops won't move farther than this from their general
 	var order_name: String
 	var order_atk: float
 	var order_take: float
@@ -40,6 +49,13 @@ class Army:
 	var mp: float
 	var mp_max: float
 	var wave: Dictionary  # active wave {x, hit}; empty = none
+	# Index of the general in `units`, -1 = none (side loses when all units are gone).
+	# An index, not a Unit reference: Unit.side points back here, and a
+	# reference cycle would leak.
+	var general_idx: int = -1
+	var troops: int  # alive non-general units at the start of the step
+	var troop_cx: float  # their centre, where the general follows
+	var troop_cy: float
 
 
 class Unit:
@@ -68,6 +84,10 @@ class Unit:
 	var born: float = 0.0  # spawn-in timer for split pieces (view only)
 	var bx: float = 0.0  # where a split piece came from (view only)
 	var by: float = 0.0
+	var is_general: bool = false
+	var flank_sign: int = 1  # -1 = upper half of the formation, +1 = lower (envelop side)
+	var engage_range: float = 0.0  # general: fights enemies closer than this
+	var follow_gap: float = 0.0  # general: stays this far behind its troops
 
 
 var cfg: Dictionary
@@ -125,11 +145,17 @@ func _init(config: Dictionary, overrides: Dictionary = {}, shared_rng: BattleRng
 	# PROTOTYPE: units spawn interleaved (S0, K0, S1, K1, ...) and each takes
 	# 4 rng draws in this exact order: x, y, attack timer, anim.
 	var spots: Array = []
+	var mid_y: Array = []
 	var max_count := 0
 	for i in sides.size():
 		var sd: Dictionary = cfg.sides[i]
 		var formation: Dictionary = cfg.formations[_formation_name(sd, overrides)]
-		spots.append(_layout_spots(formation.layout, int(sd.count), sides[i].facing))
+		var sp: Array = _layout_spots(formation.layout, int(sd.count), sides[i].facing)
+		spots.append(sp)
+		var sum_y := 0.0
+		for p in sp:
+			sum_y += p[1]
+		mid_y.append(sum_y / maxf(1.0, sp.size()))
 		max_count = maxi(max_count, int(sd.count))
 	for n in max_count:
 		for i in sides.size():
@@ -145,14 +171,31 @@ func _init(config: Dictionary, overrides: Dictionary = {}, shared_rng: BattleRng
 			u.y = maxf(float(_field.y_min), minf(float(_field.y_max), spot[1] + rng.next() * jy))
 			u.t = rng.next() * float(_combat.start_cd_jitter)
 			u.anim = rng.next() * float(_combat.anim_jitter)
+			u.flank_sign = -1 if spot[1] < mid_y[i] else 1
 			units.append(u)
 
+	# Generals spawn after the troops (so configs without generals keep the
+	# prototype's rng sequence) at a fixed spot behind their army.
+	for i in sides.size():
+		var sd: Dictionary = cfg.sides[i]
+		if sd.get("general", "") == "":
+			continue
+		var s := sides[i]
+		var g := _make_unit(s, sd.general)
+		var gx := float(sd.general_spot[0])
+		g.x = gx if s.facing == 1 else float(_field.width) - gx
+		g.y = float(sd.general_spot[1])
+		g.t = rng.next() * float(_combat.start_cd_jitter)
+		g.anim = rng.next() * float(_combat.anim_jitter)
+		s.general_idx = units.size()
+		units.append(g)
 
-## Advance the battle by dt seconds. Returns this step's events.
+
+## Advance the battle by dt seconds. Returns the events since the last step
+## (including a "cast" from calling cast() between steps).
 func step(dt: float) -> Array:
-	_events = []
 	if over != "":
-		return _events
+		return _take_events()
 	time += dt
 	var live: Array[Unit] = []
 	for u in units:
@@ -173,6 +216,7 @@ func step(dt: float) -> Array:
 	for u in live:
 		if u.tg != null and u.tg.alive:
 			engaged[u.tg.id] = engaged.get(u.tg.id, 0) + 1
+	_update_troop_centres(live)
 
 	var y_w := float(_combat.target_y_weight)
 	var move_y := float(_combat.move_y_factor)
@@ -200,6 +244,8 @@ func step(dt: float) -> Array:
 					var ex := v.x - u.x
 					var ey := (v.y - u.y) * y_w
 					var dd := ex * ex + ey * ey
+					if v.is_general and not u.is_general:
+						dd *= u.side.general_pull
 					if dd < bd:
 						bd = dd
 						best = v
@@ -213,18 +259,29 @@ func step(dt: float) -> Array:
 		var d := BattleMath.hypot(dx, dy)
 		if d == 0.0:
 			d = 1.0
+		if u.is_general and u.side.troops > 0 and d > u.engage_range:
+			_follow_troops(u, dt, move_y)
+			continue
 		if d > u.reach:
 			if u.side.hold_range > 0.0 and d > u.side.hold_range:
 				u.walking = false
 				continue
 			var sp := u.spd * u.side.form_spd
 			var my := dy * move_y
+			# Envelop: swing out above/below the enemy general instead of straight at it.
+			if u.side.envelop > 0.0 and v.is_general and not u.is_general and d > u.reach * 2.0:
+				my = (dy + float(u.flank_sign) * u.side.envelop) * move_y
 			var dm := BattleMath.hypot(dx, my)
 			if dm == 0.0:
 				dm = 1.0
-			u.x += dx / dm * sp * dt
-			u.y += my / dm * sp * dt
-			u.walking = true
+			var nx := u.x + dx / dm * sp * dt
+			var ny := u.y + my / dm * sp * dt
+			if _leashed(u, nx, ny):
+				u.walking = false
+			else:
+				u.x = nx
+				u.y = ny
+				u.walking = true
 		else:
 			u.walking = false
 			if u.t <= 0.0:
@@ -251,20 +308,33 @@ func step(dt: float) -> Array:
 	_separate(live)
 
 	var c := count()
-	var a_id := sides[0].id
-	var b_id := sides[1].id
-	# PROTOTYPE: if both armies are wiped on the same step, the first side wins.
-	if c[b_id] == 0:
-		over = a_id
-	elif c[a_id] == 0:
-		over = b_id
+	var a := sides[0]
+	var b := sides[1]
+	# PROTOTYPE: if both sides fall on the same step, the first side wins.
+	if _defeated(b, c):
+		over = a.id
+	elif _defeated(a, c):
+		over = b.id
 	elif time > _time_limit:
 		over = "draw"
 	if over != "":
 		_clear_targets()
 		if record_events:
 			_events.append({"type": "over", "winner": over})
-	return _events
+	return _take_events()
+
+
+func _take_events() -> Array:
+	var out := _events
+	_events = []
+	return out
+
+
+## Change a side's order mid-battle (player presses charge / hold).
+func set_order(side_id: String, order_name: String) -> void:
+	var s := get_side(side_id)
+	if s != null and cfg.orders.has(order_name):
+		_apply_order(s, order_name)
 
 
 ## Call if a battle is abandoned before it ends (e.g. player quits).
@@ -291,7 +361,7 @@ func cast(side_id: String) -> bool:
 	return true
 
 
-## Alive units per side id, plus per unit kind ("big", "mini", "knight").
+## Alive units per side id (generals included), plus per unit kind.
 func count() -> Dictionary:
 	var c := {}
 	for s in sides:
@@ -303,6 +373,32 @@ func count() -> Dictionary:
 	return c
 
 
+## Alive units of a side, not counting its general.
+func troop_count(side_id: String) -> int:
+	var n := 0
+	for u in units:
+		if u.alive and not u.is_general and u.side.id == side_id:
+			n += 1
+	return n
+
+
+## Why a side lost: "general" (its general fell) or "wiped" (no units left).
+func defeat_reason(side_id: String) -> String:
+	var s := get_side(side_id)
+	var g := general_of(side_id)
+	if g != null and not g.alive:
+		return "general"
+	return "wiped"
+
+
+## A side's general, or null if it has none.
+func general_of(side_id: String) -> Unit:
+	var s := get_side(side_id)
+	if s == null or s.general_idx < 0:
+		return null
+	return units[s.general_idx]
+
+
 func get_side(side_id: String) -> Army:
 	for s in sides:
 		if s.id == side_id:
@@ -311,6 +407,61 @@ func get_side(side_id: String) -> Army:
 
 
 # --- internals ----------------------------------------------------------------
+
+func _defeated(s: Army, c: Dictionary) -> bool:
+	if s.general_idx >= 0:
+		return not units[s.general_idx].alive
+	return c[s.id] == 0
+
+
+func _update_troop_centres(live: Array[Unit]) -> void:
+	for s in sides:
+		s.troops = 0
+		s.troop_cx = 0.0
+		s.troop_cy = 0.0
+	for u in live:
+		if not u.is_general:
+			u.side.troops += 1
+			u.side.troop_cx += u.x
+			u.side.troop_cy += u.y
+	for s in sides:
+		if s.troops > 0:
+			s.troop_cx /= s.troops
+			s.troop_cy /= s.troops
+
+
+## General walks to a point follow_gap behind the centre of its troops.
+## Guard formations: a soldier won't step farther from its general than `leash`
+## (moving back toward it is always allowed).
+func _leashed(u: Unit, nx: float, ny: float) -> bool:
+	if u.side.leash <= 0.0 or u.is_general or u.side.general_idx < 0:
+		return false
+	var g: Unit = units[u.side.general_idx]
+	if not g.alive:
+		return false
+	var dn := BattleMath.hypot(nx - g.x, ny - g.y)
+	if dn <= u.side.leash:
+		return false
+	return dn > BattleMath.hypot(u.x - g.x, u.y - g.y)
+
+
+func _follow_troops(u: Unit, dt: float, move_y: float) -> void:
+	var px := u.side.troop_cx - float(u.side.facing) * u.follow_gap
+	var dx := px - u.x
+	var dy := u.side.troop_cy - u.y
+	var d := BattleMath.hypot(dx, dy)
+	if d < 2.0:
+		u.walking = false
+		return
+	var sp := minf(u.spd * u.side.form_spd, d / dt)
+	var my := dy * move_y
+	var dm := BattleMath.hypot(dx, my)
+	if dm == 0.0:
+		dm = 1.0
+	u.x += dx / dm * sp * dt
+	u.y += my / dm * sp * dt
+	u.walking = true
+
 
 func _step_wave(s: Army, dt: float, live: Array[Unit]) -> void:
 	var sp := s.special
@@ -350,6 +501,7 @@ func _kill(v: Unit) -> void:
 		m.y = v.y + BattleMath.dsin(a) * float(sp.offset_y)
 		m.t = float(sp.first_attack_min) + rng.next() * float(sp.first_attack_jitter)
 		m.anim = rng.next() * float(_combat.anim_jitter)
+		m.flank_sign = v.flank_sign
 		m.born = float(sp.born_time)
 		m.bx = v.x
 		m.by = v.y
@@ -400,6 +552,9 @@ func _make_unit(s: Army, type_id: String) -> Unit:
 	u.reach = float(def.reach)
 	u.radius = float(def.radius)
 	u.split = def.get("split", {})
+	u.is_general = def.get("role", "") == "general"
+	u.engage_range = float(def.get("engage_range", 0))
+	u.follow_gap = float(def.get("follow_gap", 0))
 	if def.has("scale_from"):
 		var base: Dictionary = cfg.units[def.scale_from]
 		var p := float(def.strength_pct) / 100.0
@@ -428,6 +583,9 @@ func _apply_formation(s: Army, name: String) -> void:
 	s.form_spd = float(f.spd)
 	s.flank = float(f.get("flank", 1))
 	s.flank_min = int(f.get("flank_min", 2))
+	s.general_pull = float(f.get("general_pull", 1))
+	s.envelop = float(f.get("envelop", 0))
+	s.leash = float(f.get("leash", 0))
 
 
 func _apply_order(s: Army, name: String) -> void:
