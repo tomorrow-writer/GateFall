@@ -142,7 +142,7 @@ anchor_right = 0.5
 offset_left = -200.0
 offset_top = 18.0
 offset_right = 200.0
-offset_bottom = 62.0
+offset_bottom = 74.0
 grow_horizontal = 2
 theme_override_styles/panel = SubResource("StyleBox_panel")
 

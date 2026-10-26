@@ -35,6 +35,10 @@ class Army:
 	var form_spd: float
 	var flank: float
 	var flank_min: int
+	# Formation roles toward generals (see formations in battle_config.json)
+	var general_pull: float  # < 1: enemy general looks closer when picking targets
+	var envelop: float  # > 0: troops swing this far above/below an enemy general
+	var leash: float  # > 0: troops won't move farther than this from their general
 	var order_name: String
 	var order_atk: float
 	var order_take: float
@@ -81,6 +85,7 @@ class Unit:
 	var bx: float = 0.0  # where a split piece came from (view only)
 	var by: float = 0.0
 	var is_general: bool = false
+	var flank_sign: int = 1  # -1 = upper half of the formation, +1 = lower (envelop side)
 	var engage_range: float = 0.0  # general: fights enemies closer than this
 	var follow_gap: float = 0.0  # general: stays this far behind its troops
 
@@ -140,11 +145,17 @@ func _init(config: Dictionary, overrides: Dictionary = {}, shared_rng: BattleRng
 	# PROTOTYPE: units spawn interleaved (S0, K0, S1, K1, ...) and each takes
 	# 4 rng draws in this exact order: x, y, attack timer, anim.
 	var spots: Array = []
+	var mid_y: Array = []
 	var max_count := 0
 	for i in sides.size():
 		var sd: Dictionary = cfg.sides[i]
 		var formation: Dictionary = cfg.formations[_formation_name(sd, overrides)]
-		spots.append(_layout_spots(formation.layout, int(sd.count), sides[i].facing))
+		var sp: Array = _layout_spots(formation.layout, int(sd.count), sides[i].facing)
+		spots.append(sp)
+		var sum_y := 0.0
+		for p in sp:
+			sum_y += p[1]
+		mid_y.append(sum_y / maxf(1.0, sp.size()))
 		max_count = maxi(max_count, int(sd.count))
 	for n in max_count:
 		for i in sides.size():
@@ -160,6 +171,7 @@ func _init(config: Dictionary, overrides: Dictionary = {}, shared_rng: BattleRng
 			u.y = maxf(float(_field.y_min), minf(float(_field.y_max), spot[1] + rng.next() * jy))
 			u.t = rng.next() * float(_combat.start_cd_jitter)
 			u.anim = rng.next() * float(_combat.anim_jitter)
+			u.flank_sign = -1 if spot[1] < mid_y[i] else 1
 			units.append(u)
 
 	# Generals spawn after the troops (so configs without generals keep the
@@ -232,6 +244,8 @@ func step(dt: float) -> Array:
 					var ex := v.x - u.x
 					var ey := (v.y - u.y) * y_w
 					var dd := ex * ex + ey * ey
+					if v.is_general and not u.is_general:
+						dd *= u.side.general_pull
 					if dd < bd:
 						bd = dd
 						best = v
@@ -254,12 +268,20 @@ func step(dt: float) -> Array:
 				continue
 			var sp := u.spd * u.side.form_spd
 			var my := dy * move_y
+			# Envelop: swing out above/below the enemy general instead of straight at it.
+			if u.side.envelop > 0.0 and v.is_general and not u.is_general and d > u.reach * 2.0:
+				my = (dy + float(u.flank_sign) * u.side.envelop) * move_y
 			var dm := BattleMath.hypot(dx, my)
 			if dm == 0.0:
 				dm = 1.0
-			u.x += dx / dm * sp * dt
-			u.y += my / dm * sp * dt
-			u.walking = true
+			var nx := u.x + dx / dm * sp * dt
+			var ny := u.y + my / dm * sp * dt
+			if _leashed(u, nx, ny):
+				u.walking = false
+			else:
+				u.x = nx
+				u.y = ny
+				u.walking = true
 		else:
 			u.walking = false
 			if u.t <= 0.0:
@@ -409,6 +431,20 @@ func _update_troop_centres(live: Array[Unit]) -> void:
 
 
 ## General walks to a point follow_gap behind the centre of its troops.
+## Guard formations: a soldier won't step farther from its general than `leash`
+## (moving back toward it is always allowed).
+func _leashed(u: Unit, nx: float, ny: float) -> bool:
+	if u.side.leash <= 0.0 or u.is_general or u.side.general_idx < 0:
+		return false
+	var g: Unit = units[u.side.general_idx]
+	if not g.alive:
+		return false
+	var dn := BattleMath.hypot(nx - g.x, ny - g.y)
+	if dn <= u.side.leash:
+		return false
+	return dn > BattleMath.hypot(u.x - g.x, u.y - g.y)
+
+
 func _follow_troops(u: Unit, dt: float, move_y: float) -> void:
 	var px := u.side.troop_cx - float(u.side.facing) * u.follow_gap
 	var dx := px - u.x
@@ -465,6 +501,7 @@ func _kill(v: Unit) -> void:
 		m.y = v.y + BattleMath.dsin(a) * float(sp.offset_y)
 		m.t = float(sp.first_attack_min) + rng.next() * float(sp.first_attack_jitter)
 		m.anim = rng.next() * float(_combat.anim_jitter)
+		m.flank_sign = v.flank_sign
 		m.born = float(sp.born_time)
 		m.bx = v.x
 		m.by = v.y
@@ -546,6 +583,9 @@ func _apply_formation(s: Army, name: String) -> void:
 	s.form_spd = float(f.spd)
 	s.flank = float(f.get("flank", 1))
 	s.flank_min = int(f.get("flank_min", 2))
+	s.general_pull = float(f.get("general_pull", 1))
+	s.envelop = float(f.get("envelop", 0))
+	s.leash = float(f.get("leash", 0))
 
 
 func _apply_order(s: Army, name: String) -> void:

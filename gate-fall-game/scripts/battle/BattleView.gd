@@ -258,6 +258,8 @@ func _draw_general(u, p: Vector2, fade: float, flash: bool) -> void:
 
 ## Top-of-field HP bars for both generals (first side on the left).
 func _draw_general_bars() -> void:
+	if sim.time <= 0.0:
+		return  # setup screen: the formation panel sits here
 	var font := ThemeDB.fallback_font
 	for i in sim.sides.size():
 		var g = sim.general_of(sim.sides[i].id)

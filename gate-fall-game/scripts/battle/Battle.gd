@@ -242,6 +242,8 @@ func _side_label(id: String) -> String:
 
 func _formation_text(f: Dictionary) -> String:
 	var t := "ตี ×%s   รับดาเมจ ×%s   ความเร็ว ×%s" % [_num(f.atk), _num(f.take), _num(f.spd)]
+	if f.has("role"):
+		t = f.role + "\n" + t
 	if f.has("flank"):
 		t += "   ·   รุม %d ตัวขึ้นไป ตี ×%s" % [int(f.get("flank_min", 2)), _num(f.flank)]
 	return t
