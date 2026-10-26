@@ -166,18 +166,25 @@ func _start_fight() -> void:
 
 func _show_result(winner: String) -> void:
 	phase = "over"
-	var c := sim.count()
+	var mine := sim.troop_count(player_side)
+	var theirs := sim.troop_count(_enemy_side)
 	if winner == player_side:
 		result_label.text = "ชนะ!"
-		result_detail.text = "เหลือทหาร %d · %.0f วินาที" % [c[player_side], sim.time]
+		result_detail.text = _defeat_text(_enemy_side) + "\nเหลือทหาร %d · %.0f วินาที" % [mine, sim.time]
 	elif winner == "draw":
 		result_label.text = "เสมอ (หมดเวลา)"
-		result_detail.text = "เหลือ %d ต่อ %d" % [c[player_side], c[_enemy_side]]
+		result_detail.text = "ทหารเหลือ %d ต่อ %d" % [mine, theirs]
 	else:
 		result_label.text = "แพ้"
-		result_detail.text = "ศัตรูเหลือ %d · %.0f วินาที" % [c[_enemy_side], sim.time]
+		result_detail.text = _defeat_text(player_side) + "\nศัตรูเหลือ %d · %.0f วินาที" % [theirs, sim.time]
 	result_detail.text += "\nseed %d" % _seed
 	result_panel.show()
+
+
+func _defeat_text(loser: String) -> String:
+	if sim.defeat_reason(loser) == "general":
+		return "แม่ทัพ%sล้ม" % _side_label(loser)
+	return "ทัพ%sถูกกวาดล้าง" % _side_label(loser)
 
 
 # --- commands ----------------------------------------------------------------
@@ -210,14 +217,14 @@ func _update_hud() -> void:
 	if sim == null:
 		return
 	var s := sim.get_side(player_side)
-	var c := sim.count()
 	var has_special := not s.special.is_empty()
 	mp_bar.max_value = s.mp_max
 	mp_bar.value = s.mp
 	mp_label.text = "พลังเวท %d" % int(s.mp)
 	mp_bar.visible = has_special
 	mp_label.visible = has_special
-	count_label.text = "%s %d   %s %d" % [_side_label(player_side), c[player_side], _side_label(_enemy_side), c[_enemy_side]]
+	count_label.text = "%s %d   %s %d" % [_side_label(player_side), sim.troop_count(player_side),
+			_side_label(_enemy_side), sim.troop_count(_enemy_side)]
 	time_label.text = "%d วิ" % int(sim.time)
 	special_btn.visible = has_special
 	if has_special:

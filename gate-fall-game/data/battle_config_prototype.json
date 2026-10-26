@@ -1,0 +1,141 @@
+{
+  "_about": "Regression config: the JS prototype exactly (no generals). Do not tune this file. tools/run_sims.gd with --config=res://data/battle_config_prototype.json must match prototype/run_sims.js battle-by-battle.",
+
+  "sim": {
+    "steps_per_second": 15,
+    "time_limit": 180,
+    "seed": 1
+  },
+
+  "field": {
+    "width": 480,
+    "x_min": 10,
+    "x_max": 470,
+    "y_min": 118,
+    "y_max": 232
+  },
+
+  "combat": {
+    "target_y_weight": 1.8,
+    "move_y_factor": 0.6,
+    "retarget_base": 0.3,
+    "retarget_jitter": 0.2,
+    "attack_cd_min": 0.85,
+    "attack_cd_jitter": 0.3,
+    "damage_min": 0.8,
+    "damage_jitter": 0.4,
+    "start_cd_jitter": 0.6,
+    "anim_jitter": 6,
+    "swing_time": 0.25,
+    "hit_flash": 0.15,
+    "separation_min_d2": 0.0001
+  },
+
+  "units": {
+    "slime_big": {
+      "kind": "big",
+      "hp": 30, "atk": 5, "cd": 1.0, "spd": 28,
+      "reach": 25, "radius": 11,
+      "split": {
+        "into": "slime_mini",
+        "count": 2,
+        "offset_x": 10,
+        "offset_y": 8,
+        "first_attack_min": 0.5,
+        "first_attack_jitter": 0.4,
+        "born_time": 0.4
+      }
+    },
+    "slime_mini": {
+      "kind": "mini",
+      "scale_from": "slime_big",
+      "strength_pct": 26,
+      "cd_mult": 0.8,
+      "spd_mult": 1.25,
+      "reach": 19, "radius": 7
+    },
+    "knight": {
+      "kind": "knight",
+      "hp": 40, "atk": 7, "cd": 1.1, "spd": 24,
+      "reach": 25, "radius": 10
+    }
+  },
+
+  "_orders_note": "advance = AI default from the prototype: walks in, no bonuses.",
+  "orders": {
+    "charge":  { "label": "บุก", "atk_mult": 1.15, "take_mult": 1,    "mp_regen": 4 },
+    "hold":    { "label": "ตั้งรับ", "atk_mult": 1,    "take_mult": 0.85, "mp_regen": 4.5, "hold_range": 70 },
+    "advance": { "label": "เดินหน้า", "atk_mult": 1,    "take_mult": 1,    "mp_regen": 4 }
+  },
+
+  "_formations_note": "Spots are for an army facing right (left side of the field); a side facing left mirrors x as width - x. flank = extra atk when flank_min or more allies hit the same target.",
+  "formations": {
+    "line": {
+      "label": "หน้ากระดาน",
+      "atk": 1, "take": 1, "spd": 1,
+      "layout": { "type": "spots", "spots": [[84,128],[84,152],[84,176],[84,200],[84,224],[110,128],[110,152],[110,176],[110,200],[110,224]] }
+    },
+    "wedge": {
+      "label": "หัวลูกศร",
+      "atk": 1.12, "take": 1.1, "spd": 1.1,
+      "layout": { "type": "spots", "spots": [[150,178],[126,165],[126,191],[102,152],[102,178],[102,204],[78,139],[78,165],[78,191],[78,217]] }
+    },
+    "square": {
+      "label": "ป้อมปราการ",
+      "atk": 1, "take": 0.86, "spd": 0.75,
+      "layout": { "type": "spots", "spots": [[92,146],[114,146],[136,146],[92,168],[114,168],[136,168],[92,190],[114,190],[136,190],[92,212]] }
+    },
+    "crescent": {
+      "label": "ปีกกา",
+      "atk": 0.96, "take": 1.08, "spd": 1, "flank": 1.1, "flank_min": 2,
+      "layout": { "type": "arc", "x": 78, "rx": 58, "y": 178, "ry": 56, "angle_start": -1.25, "angle_span": 2.5 }
+    }
+  },
+
+  "specials": {
+    "emerald_slime_wave": {
+      "label": "คลื่นสไลม์มรกต",
+      "mp_cost": 70,
+      "damage": 3,
+      "start_x": 30,
+      "speed": 340,
+      "width": 40,
+      "end_x": 520,
+      "hit_flash": 0.3,
+      "auto_cast_after": 3,
+      "cutscene_time": 0.9
+    }
+  },
+
+  "_sides_note": "Side order matters: units spawn interleaved in this order, and if both armies die on the same step the first side wins (prototype behaviour).",
+  "sides": [
+    {
+      "id": "S",
+      "name": "slime",
+      "label": "สไลม์",
+      "unit": "slime_big",
+      "count": 10,
+      "facing": 1,
+      "spawn_jitter": [3, 3],
+      "formation": "line",
+      "order": "charge",
+      "special": "emerald_slime_wave",
+      "mp_start": 30,
+      "mp_max": 100
+    },
+    {
+      "id": "K",
+      "name": "human",
+      "label": "อัศวิน",
+      "unit": "knight",
+      "count": 10,
+      "facing": -1,
+      "spawn_jitter": [4, 4],
+      "formation": "line",
+      "order": "advance",
+      "special": "",
+      "mp_start": 30,
+      "mp_max": 100
+    }
+  ]
+}

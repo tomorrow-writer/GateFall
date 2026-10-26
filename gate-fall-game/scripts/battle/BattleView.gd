@@ -102,6 +102,7 @@ func _draw() -> void:
 		_draw_unit(u)
 	for f in _fx:
 		_draw_fx(f)
+	_draw_general_bars()
 	if _flash > 0.0:
 		draw_rect(Rect2(0, 0, 480, 270), Color(0.6, 1.0, 0.6, _flash * 1.6))
 	if _cutscene > 0.0:
@@ -155,9 +156,11 @@ func _draw_unit(u) -> void:
 	match u.kind:
 		"big", "mini":
 			_draw_slime(u, p, fade, flash)
+		"general":
+			_draw_general(u, p, fade, flash)
 		_:
 			_draw_knight(u, p, fade, flash)
-	if u.alive and u.hp < u.max_hp:
+	if u.alive and u.hp < u.max_hp and not u.is_general:
 		var w := 14.0 if u.kind != "mini" else 9.0
 		var top := p + Vector2(-w / 2.0, -26.0 if u.kind == "knight" else (-20.0 if u.kind == "big" else -14.0))
 		draw_rect(Rect2(top, Vector2(w, 2)), HP_BG)
@@ -211,6 +214,76 @@ func _draw_knight(u, p: Vector2, fade: float, flash: bool) -> void:
 	var hand := base + Vector2(f * 5, -12)
 	var tip := hand + (Vector2(f * 11, 2) if u.swing > 0.0 else Vector2(f * 3, -10))
 	draw_line(hand, tip, Color("e8e8f0"), 1.0)
+
+
+## Placeholder generals: slime general (green armour, red cape, orb staff) and
+## knight general (gold-trimmed armour, blue cape). Both clearly bigger than troops.
+func _draw_general(u, p: Vector2, fade: float, flash: bool) -> void:
+	var f: float = float(u.side.facing)
+	var bob := absf(sin(u.anim * 6.0)) * 1.5 if u.walking else 0.0
+	var b := p + Vector2(0, -bob)
+	var slime: bool = u.type_id.contains("slime")
+	var armour := Color("2f8a52") if slime else Color("8f9bb3")
+	var cape := Color("a02a2a") if slime else Color("2a4aa0")
+	var trim := Color("d8b440")
+	if flash:
+		armour = FLASH
+	if not u.alive:
+		draw_rect(Rect2(b + Vector2(-13, -7), Vector2(26, 7)), Color(armour.darkened(0.4), fade))
+		return
+	# aura ring so the general is easy to find
+	draw_arc(b + Vector2(0, -1), 13.0, 0, TAU, 20, Color(trim, 0.5), 1.0)
+	draw_colored_polygon(PackedVector2Array([b + Vector2(-f * 3 - 5, -30), b + Vector2(-f * 3 + 5, -30),
+			b + Vector2(-f * 3 + 8, -4), b + Vector2(-f * 3 - 9, -4)]), cape)
+	draw_rect(Rect2(b + Vector2(-6, -30), Vector2(12, 22)), armour)
+	draw_rect(Rect2(b + Vector2(-6, -18), Vector2(12, 2)), trim)
+	draw_rect(Rect2(b + Vector2(-6, -8), Vector2(4, 8)), armour.darkened(0.35))
+	draw_rect(Rect2(b + Vector2(2, -8), Vector2(4, 8)), armour.darkened(0.35))
+	draw_rect(Rect2(b + Vector2(-5, -39), Vector2(10, 9)), Color("e8c8a8") if slime else armour)
+	if slime:
+		draw_rect(Rect2(b + Vector2(-5, -41), Vector2(10, 3)), Color("7a4fb0"))
+	else:
+		draw_rect(Rect2(b + Vector2(-5, -41), Vector2(10, 3)), trim)
+		draw_rect(Rect2(b + Vector2(-1, -45), Vector2(2, 4)), PLUME)
+	draw_rect(Rect2(b + Vector2(f * 2 - 1, -36), Vector2(2, 2)), Color(0, 0, 0))
+	var hand := b + Vector2(f * 8, -20)
+	if slime:
+		var lean := Vector2(f * 6, 0) if u.swing > 0.0 else Vector2.ZERO
+		draw_line(hand + Vector2(0, 12), hand + Vector2(0, -24) + lean, Color("c9a46a"), 2.0)
+		draw_circle(hand + Vector2(0, -27) + lean, 4.0, WAVE)
+	else:
+		var tip := hand + (Vector2(f * 18, 3) if u.swing > 0.0 else Vector2(f * 4, -18))
+		draw_line(hand, tip, Color("f0f0ff"), 2.0)
+
+
+## Top-of-field HP bars for both generals (first side on the left).
+func _draw_general_bars() -> void:
+	var font := ThemeDB.fallback_font
+	for i in sim.sides.size():
+		var g = sim.general_of(sim.sides[i].id)
+		if g == null:
+			continue
+		var w := 150.0
+		var x := 6.0 if i == 0 else 480.0 - 6.0 - w
+		var y := 20.0
+		var k := clampf(g.hp / g.max_hp, 0.0, 1.0)
+		draw_rect(Rect2(x - 1, y - 1, w + 2, 6), Color(0, 0, 0, 0.7))
+		var col := Color("e05a4a") if k < 0.3 else HP_FG
+		if i == 0:
+			draw_rect(Rect2(x, y, w * k, 4), col)
+		else:
+			draw_rect(Rect2(x + w * (1.0 - k), y, w * k, 4), col)
+		var label := "แม่ทัพ%s %d" % [_side_label(sim.sides[i].id), maxi(0, ceili(g.hp))]
+		var tw := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 9).x
+		var tx := x if i == 0 else x + w - tw
+		draw_string(font, Vector2(tx, y + 14), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.9))
+
+
+func _side_label(id: String) -> String:
+	for sd in sim.cfg.sides:
+		if sd.id == id:
+			return sd.get("label", id)
+	return id
 
 
 func _draw_fx(f: Dictionary) -> void:

@@ -1,5 +1,5 @@
 {
-  "_about": "Battle tuning for BattleSim.gd. Values copied 1:1 from prototype/battle_core.js. Times are seconds, distances are field pixels (480x240).",
+  "_about": "Battle tuning for BattleSim.gd. Troop values come from prototype/battle_core.js; generals are new (start: ~6x a soldier, tune with tools/run_sims.gd). Times are seconds, distances are field pixels (480x240).",
 
   "sim": {
     "steps_per_second": 15,
@@ -58,6 +58,19 @@
       "kind": "knight",
       "hp": 40, "atk": 7, "cd": 1.1, "spd": 24,
       "reach": 25, "radius": 10
+    },
+    "_generals_note": "Generals, starting point from run_sims: slime general 6x hp / 3x atk of a big slime; knight general 5x hp / ~2.6x atk of a knight (6x/3x made slimes win only 5-20%). A bit slower than troops. engage_range = fights enemies this close; follow_gap = hangs this far behind its troops.",
+    "general_slime": {
+      "kind": "general", "role": "general",
+      "hp": 180, "atk": 15, "cd": 1.0, "spd": 24,
+      "reach": 28, "radius": 14,
+      "engage_range": 70, "follow_gap": 45
+    },
+    "general_knight": {
+      "kind": "general", "role": "general",
+      "hp": 200, "atk": 18, "cd": 1.1, "spd": 20,
+      "reach": 28, "radius": 14,
+      "engage_range": 70, "follow_gap": 45
     }
   },
 
@@ -120,6 +133,8 @@
       "formation": "line",
       "order": "charge",
       "special": "emerald_slime_wave",
+      "general": "general_slime",
+      "general_spot": [40, 176],
       "mp_start": 30,
       "mp_max": 100
     },
@@ -134,6 +149,8 @@
       "formation": "line",
       "order": "advance",
       "special": "",
+      "general": "general_knight",
+      "general_spot": [40, 176],
       "mp_start": 30,
       "mp_max": 100
     }
