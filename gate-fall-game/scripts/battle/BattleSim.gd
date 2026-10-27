@@ -53,9 +53,13 @@
 ##
 ## Generals (CLAUDE.md section 5): a side with "general" in the config fields a
 ## general that stands at its post behind the army (DF style) and only hits
-## enemies that reach it, until set_general_charge sends it in. A general
-## whose troops are all gone fights on its own (and two such generals duel). The side loses when
-## its general falls.
+## enemies that reach it, until set_general_charge sends it in. A general at
+## its post never steps off it: enemies that reach it spread out around it
+## (front, back, above, below: _surround_slots) and it cuts them down one at a
+## time (_foe_in_reach), whatever the order or a recall says; crowding can't
+## shove it either (_anchored). A general whose troops are all gone walks to
+## the nearest enemy soldier and fights on its own (and two such generals
+## duel). The side loses when its general falls.
 class_name BattleSim
 extends RefCounted
 
@@ -320,6 +324,7 @@ func step(dt: float) -> Array:
 		if u.tg != null and u.tg.alive:
 			engaged[u.tg.id] = engaged.get(u.tg.id, 0) + 1
 	_update_troop_centres(live)
+	var slots := _surround_slots(live)
 
 	var y_w := float(_combat.target_y_weight)
 	var move_y := float(_combat.move_y_factor)
@@ -355,10 +360,16 @@ func step(dt: float) -> Array:
 		if us.split_lane >= 0 and not u.is_general and _in_lane(us.split_lane, u.y):
 			_step_out_of_lane(u, dt)
 			continue
-		if us.retreating and not (u.is_general and not us.gen_charge):
+		# Retreat moves troops only: a general never turns its back on a fight.
+		if us.retreating and not u.is_general:
 			_retreat(u, dt, move_y)
 			continue
-		if u.tg == null or not u.tg.alive or u.re <= 0.0:
+		# A general fights whoever is within its reach, one at a time, before
+		# anything else (never stepping out to answer longer reaches).
+		var foe: Unit = _foe_in_reach(u, live) if u.is_general else null
+		if foe != null:
+			u.tg = foe
+		elif u.tg == null or not u.tg.alive or u.re <= 0.0:
 			var best: Unit = null
 			var bd := 1e9
 			for v in live:
@@ -368,6 +379,10 @@ func step(dt: float) -> Array:
 					var dd := ex * ex + ey * ey
 					if v.is_general and not u.is_general:
 						dd *= us.general_pull
+					# A general left without troops goes for the nearest enemy
+					# soldier (the enemy general only once its troops are gone).
+					elif v.is_general and u.is_general and us.troops == 0 and v.side.troops > 0:
+						dd *= 1e6
 					if dd < bd:
 						bd = dd
 						best = v
@@ -382,13 +397,23 @@ func step(dt: float) -> Array:
 		if d == 0.0:
 			d = 1.0
 		# A general not sent in holds its post: it hits whoever reaches it but
-		# never chases (walks back to the post after a recall). With no troops
-		# left it fights on its own.
-		if u.is_general and not us.gen_charge and us.troops > 0 and d > u.reach:
+		# never chases (walks back to the post after a recall, but only once
+		# nobody is fighting it). With no troops left it fights on its own.
+		if u.is_general and foe == null and not us.gen_charge and us.troops > 0 and d > u.reach:
 			_hold_post(u, dt, move_y)
 			continue
+		# Mobbing a general: take a spot around it rather than piling up in front.
+		var slot = slots.get(u.id) if v.is_general and not u.is_general else null
+		if slot != null and (d > u.reach or u.t > 0.0):
+			if us.hold_range > 0.0 and d > us.hold_range:
+				u.walking = false
+			else:
+				_to_slot(u, v, float(slot), dt, move_y)
+			if d > u.reach:
+				continue
 		if d > u.reach:
-			if us.hold_range > 0.0 and d > us.hold_range and not (u.is_general and us.gen_charge):
+			# hold_range keeps troops in place; generals follow their own rules above.
+			if us.hold_range > 0.0 and d > us.hold_range and not u.is_general:
 				u.walking = false
 				continue
 			var sp := u.spd * us.form_spd
@@ -410,7 +435,8 @@ func step(dt: float) -> Array:
 				u.y = ny
 				u.walking = true
 		else:
-			u.walking = false
+			if slot == null:
+				u.walking = false
 			if u.t <= 0.0:
 				u.t = u.cd * (cd_min + rng.next() * cd_jit)
 				u.swing = swing_time
@@ -424,7 +450,8 @@ func step(dt: float) -> Array:
 				dmg *= v.side.form_take
 				if us.split_lane >= 0:
 					dmg *= crowd_atk
-				if v.is_general and v.side.gen_charge:
+				# Out at the front (sent in, or recalled but not back yet).
+				if v.is_general and (v.side.gen_charge or v.side.gen_returning):
 					dmg *= v.front_take if v.front_take > 0.0 else front_take
 					if not v.side.pending.is_empty():
 						dmg *= channel_take
@@ -848,6 +875,91 @@ func _leashed(u: Unit, nx: float, ny: float) -> bool:
 	return dn > BattleMath.hypot(u.x - g.x, u.y - g.y)
 
 
+## The enemy a general fights right now, or null: its current target while
+## that is still alive and within reach (finish one before the next), else the
+## nearest enemy within its reach.
+func _foe_in_reach(g: Unit, live: Array[Unit]) -> Unit:
+	var t := g.tg
+	if t != null and t.alive and t.side != g.side and BattleMath.hypot(t.x - g.x, t.y - g.y) <= g.reach:
+		return t
+	var best: Unit = null
+	var bd := 1e9
+	for v in live:
+		if not v.alive or v.side == g.side:
+			continue
+		var d := BattleMath.hypot(v.x - g.x, v.y - g.y)
+		if d <= g.reach and d < bd:
+			bd = d
+			best = v
+	return best
+
+
+## A general standing (at its post, or fighting): crowding never moves it.
+func _anchored(u: Unit) -> bool:
+	return u.is_general and not u.walking
+
+
+## Spots around each general for the enemy troops going at it: unit id ->
+## angle (radians) around the general. The attackers keep their order around
+## it (sorted by the angle they come from) and are spread evenly over the full
+## circle, so a mob ends up in front of, behind, above and below it.
+func _surround_slots(live: Array[Unit]) -> Dictionary:
+	var by_gen := {}
+	for u in live:
+		if u.alive and not u.is_general and u.tg != null and u.tg.alive and u.tg.is_general \
+				and u.tg.side != u.side:
+			if not by_gen.has(u.tg.id):
+				by_gen[u.tg.id] = []
+			by_gen[u.tg.id].append(u)
+	var out := {}
+	for gid in by_gen:
+		var mob: Array = by_gen[gid]
+		var g: Unit = mob[0].tg
+		var ang := []
+		for u in mob:
+			ang.append([atan2(u.y - g.y, u.x - g.x), u.id, u])
+		ang.sort_custom(func(a, b): return a[0] < b[0] or (a[0] == b[0] and a[1] < b[1]))
+		var n := ang.size()
+		var base: float = ang[0][0]
+		for k in n:
+			out[ang[k][2].id] = base + TAU * k / n
+	return out
+
+
+## Walk toward a spot around general g (angle a), going round it rather than
+## through it.
+func _to_slot(u: Unit, g: Unit, a: float, dt: float, move_y: float) -> void:
+	var r := minf(u.reach - 1.0, u.radius + g.radius)
+	var cur := atan2(u.y - g.y, u.x - g.x)
+	var diff := wrapf(a - cur, -PI, PI)
+	var aim := a
+	var rr := r
+	if absf(diff) > 0.6:
+		aim = cur + signf(diff) * 0.6
+		rr = r + 6.0
+	var tx := g.x + cos(aim) * rr
+	var ty := g.y + sin(aim) * rr
+	var dx := tx - u.x
+	var dy := ty - u.y
+	var dist := BattleMath.hypot(dx, dy)
+	if dist < 1.5:
+		u.walking = false
+		return
+	var sp := minf(u.spd * u.side.form_spd, dist / dt)
+	var my := dy * move_y
+	var dm := BattleMath.hypot(dx, my)
+	if dm == 0.0:
+		dm = 1.0
+	var nx := u.x + dx / dm * sp * dt
+	var ny := u.y + my / dm * sp * dt
+	if _leashed(u, nx, ny):
+		u.walking = false
+		return
+	u.x = nx
+	u.y = ny
+	u.walking = true
+
+
 ## General not sent in: stands at its post (where it started); after a
 ## recall it walks back there
 ## at return_spd_mult x speed.
@@ -1015,16 +1127,24 @@ func _separate(live: Array[Unit]) -> void:
 			if not b.alive:
 				continue
 			var mn := a.radius + b.radius
+			# A soldier fighting an enemy general may stand within its reach
+			# (small units would otherwise be held off out of reach).
+			if a.side != b.side and a.is_general != b.is_general:
+				var s_reach := b.reach if a.is_general else a.reach
+				mn = minf(mn, s_reach - 1.0)
 			var dx := b.x - a.x
 			var dy := b.y - a.y
 			var d2 := dx * dx + dy * dy
 			if d2 < mn * mn and d2 > min_d2:
 				var d := sqrt(d2)
 				var p := (mn - d) / 2.0
-				a.x -= dx / d * p
-				a.y -= dy / d * p
-				b.x += dx / d * p
-				b.y += dy / d * p
+				# A general at its post doesn't budge: the other one takes the whole push.
+				var wa := 0.0 if _anchored(a) else (2.0 if _anchored(b) else 1.0)
+				var wb := 0.0 if _anchored(b) else (2.0 if _anchored(a) else 1.0)
+				a.x -= dx / d * p * wa
+				a.y -= dy / d * p * wa
+				b.x += dx / d * p * wb
+				b.y += dy / d * p * wb
 		a.y = maxf(y_min, minf(y_max, a.y))
 		a.x = maxf(x_min, minf(x_max, a.x))
 

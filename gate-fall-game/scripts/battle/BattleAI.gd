@@ -23,11 +23,13 @@
 ##
 ## General charge (every think_interval s, after charge_after s), by the
 ##   general's own style (units.<general>.ai_charge): "front" goes in while its
-##   HP >= charge_hp and comes back below return_hp; "never" stays; "mopup"
+##   HP >= charge_hp alongside troops that are going in; "never" stays; "mopup"
 ##   (default) is a mop-up
 ##   charge: send the general in while its HP >= charge_hp, our troops' HP >=
 ##   charge_adv x theirs and at most charge_max_enemy_troops of theirs are left;
-##   call it back when HP < return_hp or troops fall below return_adv x.
+##   call it back when troops fall below return_adv x. A hurt general is never
+##   called back (it stands and takes the hits), and a recalled one only walks
+##   back once nobody is fighting it (BattleSim._foe_in_reach).
 ## Tuning lives in battle_config.json "ai"; DEFAULTS below fill any gap.
 extends RefCounted
 
@@ -50,7 +52,6 @@ const DEFAULTS := {
 	"charge_hp": 0.7,
 	"charge_adv": 1.5,
 	"charge_max_enemy_troops": 3,
-	"return_hp": 0.4,
 	"return_adv": 0.7,
 	"duel_retreat_ratio": 1.5,
 }
@@ -267,7 +268,7 @@ func _think_gcharge(sim, s) -> void:
 		var with_troops: bool = not s.retreating and s.hold_range <= 0.0
 		if not s.gen_charge and hp >= float(tuning.charge_hp) and with_troops:
 			sim.set_general_charge(side_id, true)
-		elif s.gen_charge and (hp < float(tuning.return_hp) or not with_troops):
+		elif s.gen_charge and not with_troops:
 			sim.set_general_charge(side_id, false)
 		return
 	var own := 0.0
@@ -284,7 +285,7 @@ func _think_gcharge(sim, s) -> void:
 		if hp >= float(tuning.charge_hp) and own >= theirs * float(tuning.charge_adv) \
 				and their_n <= int(tuning.charge_max_enemy_troops):
 			sim.set_general_charge(side_id, true)
-	elif hp < float(tuning.return_hp) or own < theirs * float(tuning.return_adv):
+	elif own < theirs * float(tuning.return_adv):
 		sim.set_general_charge(side_id, false)
 
 

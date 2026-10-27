@@ -45,6 +45,11 @@ var _sprites := {}  # unit type id -> {"anims": {name: {tex, frames, fps, loop}}
 var _fx_sprites := {}  # effect id -> {tex, w, h, frames, fps, loop, foot}
 var _duel_t0 := -1.0  # view clock when the duel started
 var _duel_nums: Array = []  # {side (target), text, t0, col}
+var _bg: Texture2D = null  # field.background from the config (null = drawn placeholder)
+var _bg_path := ""
+var _facing := {}  # unit id -> -1/+1, which way it is drawn facing (see _update_facing)
+var _duel_bg: Texture2D = null  # field.duel_background (null = drawn placeholder)
+var _duel_bg_path := ""
 
 
 func bind(s: BattleSim) -> void:
@@ -52,6 +57,7 @@ func bind(s: BattleSim) -> void:
 	_load_sprites()
 	_load_fx_sprites()
 	_prev.clear()
+	_facing.clear()
 	_died_at.clear()
 	_born_at.clear()
 	_fx.clear()
@@ -66,7 +72,35 @@ func capture_prev() -> void:
 	if sim == null:
 		return
 	for u in sim.units:
+		_update_facing(u)
 		_prev[u.id] = Vector2(u.x, u.y)
+
+
+## Units turn to face what they fight: a target within reach (so a mob behind
+## a general hits its back and the general turns round to cut them down),
+## else the way they walked last step, else their target. Small moves don't
+## flip them, so nobody jitters.
+func _update_facing(u) -> void:
+	var f: float = _facing.get(u.id, float(u.side.facing))
+	if u.alive and sim.phase == "field":
+		var t = u.tg
+		var tdx: float = t.x - u.x if t != null and t.alive else 0.0
+		var near: bool = t != null and t.alive and Vector2(tdx, t.y - u.y).length() <= u.reach + 4.0
+		var mdx: float = u.x - _prev[u.id].x if _prev.has(u.id) else 0.0
+		if near and absf(tdx) > 2.0:
+			f = signf(tdx)
+		elif u.walking and absf(mdx) > 0.5:
+			f = signf(mdx)
+		elif not u.walking and absf(tdx) > 2.0:
+			f = signf(tdx)
+	_facing[u.id] = f
+
+
+## Which way to draw a unit: per unit on the field, the side's way in the duel.
+func _face(u) -> float:
+	if sim.phase != "field":
+		return float(u.side.facing)
+	return _facing.get(u.id, float(u.side.facing))
 
 
 func handle_events(events: Array) -> void:
@@ -183,7 +217,17 @@ func _pos(u) -> Vector2:
 
 
 func _draw_field() -> void:
-	# Sky (top band, behind the HUD)
+	# Painted background (480x270: horizon at y 104, ground to y 240, HUD strip below).
+	var path := ""
+	if sim != null:
+		path = str(sim.cfg.field.get("background", ""))
+	if path != _bg_path:
+		_bg_path = path
+		_bg = load(path) as Texture2D if path != "" and ResourceLoader.exists(path) else null
+	if _bg != null:
+		draw_texture_rect(_bg, Rect2(0, 0, 480, 270), false)
+		return
+	# Placeholder: sky (top band, behind the HUD)
 	var sky_top := Color("1d2a48")
 	var sky_low := Color("d98c5a")
 	for i in 8:
@@ -361,7 +405,7 @@ func _draw_slime(u, p: Vector2, fade: float, flash: bool) -> void:
 	draw_circle(Vector2.ZERO, r, Color(col, fade))
 	draw_set_transform(Vector2.ZERO)
 	# eyes face the enemy
-	var f: float = float(u.side.facing)
+	var f: float = _face(u)
 	draw_rect(Rect2(c + Vector2(f * r * 0.25 - 1, -2), Vector2(1.5, 2)), Color(0, 0, 0, fade))
 	draw_rect(Rect2(c + Vector2(f * r * 0.6 - 1, -2), Vector2(1.5, 2)), Color(0, 0, 0, fade))
 	# spear
@@ -371,7 +415,7 @@ func _draw_slime(u, p: Vector2, fade: float, flash: bool) -> void:
 
 
 func _draw_knight(u, p: Vector2, fade: float, flash: bool) -> void:
-	var f: float = float(u.side.facing)
+	var f: float = _face(u)
 	var bob := absf(sin(u.anim * 8.0)) * 1.5 if u.walking else 0.0
 	var body := KNIGHT if not flash else FLASH
 	var base := p + Vector2(0, -bob)
@@ -411,7 +455,7 @@ func _draw_general_marks(u, b: Vector2) -> void:
 
 
 func _draw_general(u, p: Vector2, fade: float, flash: bool) -> void:
-	var f: float = float(u.side.facing)
+	var f: float = _face(u)
 	var bob := absf(sin(u.anim * 6.0)) * 1.5 if u.walking else 0.0
 	var b := p + Vector2(0, -bob)
 	var slime: bool = u.type_id.contains("slime")
@@ -586,7 +630,7 @@ func _other_side(id: String) -> String:
 # --- duel close-up -------------------------------------------------------------
 
 const DUEL_X := [165.0, 315.0]  # first side (facing right) on the left
-const DUEL_Y := 205.0
+const DUEL_Y := 214.0  # feet line: centre of the spotlight in the duel background
 const DUEL_SCALE := 2.6  # placeholder generals
 const DUEL_SPRITE_SCALE := 2.0  # sprites: integer scale keeps the pixels square
 
@@ -595,11 +639,19 @@ const DUEL_SPRITE_SCALE := 2.0  # sprites: integer scale keeps the pixels square
 ## attacker lunges on each blow, damage numbers float up, HP bars on top.
 func _draw_duel() -> void:
 	var k := 1.0 if _duel_t0 < 0.0 else clampf((_clock - _duel_t0) / 0.4, 0.0, 1.0)
-	draw_rect(Rect2(0, 0, 480, 270), Color(0.05, 0.05, 0.09, 0.85 * k + 0.1))
-	# spotlight and ground
-	draw_circle(Vector2(240, 300), 210.0, Color(0.95, 0.75, 0.45, 0.10))
-	draw_rect(Rect2(0, DUEL_Y, 480, 270 - DUEL_Y), Color(0.16, 0.13, 0.12))
-	draw_line(Vector2(0, DUEL_Y), Vector2(480, DUEL_Y), Color(0.95, 0.75, 0.45, 0.4), 1.0)
+	var path := str(sim.cfg.field.get("duel_background", ""))
+	if path != _duel_bg_path:
+		_duel_bg_path = path
+		_duel_bg = load(path) as Texture2D if path != "" and ResourceLoader.exists(path) else null
+	if _duel_bg != null:
+		# Painted duel scene (480x270, spotlight centred on DUEL_Y), fading in over the field.
+		draw_texture_rect(_duel_bg, Rect2(0, 0, 480, 270), false, Color(1, 1, 1, k))
+	else:
+		draw_rect(Rect2(0, 0, 480, 270), Color(0.05, 0.05, 0.09, 0.85 * k + 0.1))
+		# spotlight and ground
+		draw_circle(Vector2(240, 300), 210.0, Color(0.95, 0.75, 0.45, 0.10))
+		draw_rect(Rect2(0, DUEL_Y, 480, 270 - DUEL_Y), Color(0.16, 0.13, 0.12))
+		draw_line(Vector2(0, DUEL_Y), Vector2(480, DUEL_Y), Color(0.95, 0.75, 0.45, 0.4), 1.0)
 	var font := ThemeDB.fallback_font
 	for i in sim.sides.size():
 		var s = sim.sides[i]
@@ -791,7 +843,7 @@ func _draw_sprite(u, p: Vector2, fade: float, flash: bool, scale: float) -> bool
 	i = i % int(a.frames) if a.loop else mini(i, int(a.frames) - 1)
 	var w: float = sp.w
 	var h: float = sp.h
-	var f := float(u.side.facing)
+	var f := _face(u)
 	var foot: Vector2 = sp.foot
 	# born pop-in for split slimes
 	var born: float = _clock - _born_at.get(u.id, -10.0)
