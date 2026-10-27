@@ -5,6 +5,8 @@
 ## Reads the sim's command state every frame: a special's warning time lights
 ## up its target lane (red when it is coming at the player), an opened lane is
 ## striped in the player's colour, a general sent in gets a red ring.
+## When the sim reaches its duel phase the view cuts to a close-up of the two
+## generals trading blows (_draw_duel), with damage numbers from duel_hit.
 extends Node2D
 
 const BattleSim = preload("res://scripts/battle/BattleSim.gd")
@@ -36,6 +38,8 @@ var _flash := 0.0  # full-screen flash when a special is cast
 var _flash_col := WAVE
 ## Side the player commands: enemy warnings are drawn red, own ones in the special's colour.
 var player_side := ""
+var _duel_t0 := -1.0  # view clock when the duel started
+var _duel_nums: Array = []  # {side (target), text, t0, col}
 
 
 func bind(s: BattleSim) -> void:
@@ -44,6 +48,8 @@ func bind(s: BattleSim) -> void:
 	_died_at.clear()
 	_born_at.clear()
 	_fx.clear()
+	_duel_t0 = -1.0
+	_duel_nums.clear()
 	capture_prev()
 	queue_redraw()
 
@@ -75,6 +81,24 @@ func handle_events(events: Array) -> void:
 			"launch":
 				_flash = 0.2
 				_flash_col = _special_color(sim.get_side(e.side))
+			"duel_offer":
+				_flash = 0.3
+				_flash_col = Color(1, 1, 1)
+			"duel_start":
+				_duel_t0 = _clock
+				_flash = 0.35
+				_flash_col = Color(1, 0.9, 0.6)
+			"duel_hit":
+				var target := _other_side(e.side)
+				if e.miss:
+					_duel_nums.append({"side": target, "text": "พลาด", "t0": _clock, "col": Color(0.8, 0.8, 0.85)})
+				else:
+					var big: bool = e.dmg >= 30.0
+					_duel_nums.append({"side": target, "text": "-%d" % roundi(e.dmg), "t0": _clock,
+							"col": Color("ffdd55") if big else Color(1, 1, 1), "big": big})
+					if big:
+						_flash = 0.12
+						_flash_col = Color(1, 1, 1)
 
 
 ## Special's "color" from the config, light green if unset.
@@ -99,6 +123,11 @@ func _draw() -> void:
 	_draw_field()
 	if sim == null:
 		return
+	if sim.phase == "duel":
+		_draw_duel()
+		if _flash > 0.0:
+			draw_rect(Rect2(0, 0, 480, 270), Color(_flash_col, _flash * 1.5))
+		return
 	_draw_lanes()
 	for s in sim.sides:
 		if not s.pending.is_empty():
@@ -122,6 +151,8 @@ func _draw() -> void:
 		_draw_fx(f)
 	_draw_general_bars()
 	_draw_banners()
+	if sim.phase == "offer":
+		draw_rect(Rect2(0, 0, 480, 270), Color(0, 0, 0, 0.45))
 	if _flash > 0.0:
 		draw_rect(Rect2(0, 0, 480, 270), Color(_flash_col.lerp(Color.WHITE, 0.4), _flash * 1.2))
 
@@ -461,3 +492,94 @@ func _draw_banners() -> void:
 		draw_rect(Rect2(240.0 - tw / 2.0 - 6.0, y - 11.0, tw + 12.0, 15.0), Color(0, 0, 0, 0.6))
 		draw_string(font, Vector2(240.0 - tw / 2.0, y), text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, col)
 		row += 1
+
+
+func _other_side(id: String) -> String:
+	for s in sim.sides:
+		if s.id != id:
+			return s.id
+	return id
+
+
+# --- duel close-up -------------------------------------------------------------
+
+const DUEL_X := [165.0, 315.0]  # first side (facing right) on the left
+const DUEL_Y := 205.0
+const DUEL_SCALE := 2.6
+
+
+## The duel: dark backdrop, the two generals big and facing each other, the
+## attacker lunges on each blow, damage numbers float up, HP bars on top.
+func _draw_duel() -> void:
+	var k := 1.0 if _duel_t0 < 0.0 else clampf((_clock - _duel_t0) / 0.4, 0.0, 1.0)
+	draw_rect(Rect2(0, 0, 480, 270), Color(0.05, 0.05, 0.09, 0.85 * k + 0.1))
+	# spotlight and ground
+	draw_circle(Vector2(240, 300), 210.0, Color(0.95, 0.75, 0.45, 0.10))
+	draw_rect(Rect2(0, DUEL_Y, 480, 270 - DUEL_Y), Color(0.16, 0.13, 0.12))
+	draw_line(Vector2(0, DUEL_Y), Vector2(480, DUEL_Y), Color(0.95, 0.75, 0.45, 0.4), 1.0)
+	var font := ThemeDB.fallback_font
+	for i in sim.sides.size():
+		var s = sim.sides[i]
+		var g = sim.general_of(s.id)
+		if g == null:
+			continue
+		var fade := 1.0
+		if not g.alive:
+			fade = clampf(1.0 - (_clock - _died_at.get(g.id, _clock)) / 0.8, 0.0, 1.0)
+		# lunge toward the opponent while swinging
+		var lunge: float = (g.swing / 0.25) * 22.0 * float(s.facing) if g.swing > 0.0 else 0.0
+		var shake := sin(_clock * 60.0) * 2.0 if g.fx > 0.0 else 0.0
+		var pos := Vector2(DUEL_X[i] + lunge + shake, DUEL_Y)
+		draw_ellipse_shadow(pos, fade)
+		draw_set_transform(pos, 0.0, Vector2(DUEL_SCALE, DUEL_SCALE))
+		_draw_general(g, Vector2.ZERO, fade, g.fx > 0.0)
+		draw_set_transform(Vector2.ZERO)
+		# HP bar and name, big, on this general's side
+		var w := 170.0
+		var x := 20.0 if i == 0 else 480.0 - 20.0 - w
+		var y := 26.0
+		var hp := clampf(g.hp / g.max_hp, 0.0, 1.0)
+		draw_rect(Rect2(x - 1, y - 1, w + 2, 9), Color(0, 0, 0, 0.8))
+		var col := Color("e05a4a") if hp < 0.3 else HP_FG
+		if i == 0:
+			draw_rect(Rect2(x, y, w * hp, 7), col)
+		else:
+			draw_rect(Rect2(x + w * (1.0 - hp), y, w * hp, 7), col)
+		var label := "แม่ทัพ%s  %d" % [_side_label(s.id), maxi(0, ceili(g.hp))]
+		var st: Dictionary = sim.duel_style(g)
+		var style := "ตี %d ครั้ง/ตา" % int(st.hits)
+		var tw := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x
+		var sw := font.get_string_size(style, HORIZONTAL_ALIGNMENT_LEFT, -1, 8).x
+		draw_string(font, Vector2(x if i == 0 else x + w - tw, y + 21), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 11,
+				Color(1, 1, 1, 0.95))
+		draw_string(font, Vector2(x if i == 0 else x + w - sw, y + 32), style, HORIZONTAL_ALIGNMENT_LEFT, -1, 8,
+				Color(1, 1, 1, 0.6))
+	# whose turn: small marker over the attacker
+	if sim.over == "" and sim.duel.has("order"):
+		var atk: String = sim.duel.order[sim.duel.turn]
+		var idx := 0 if sim.sides[0].id == atk else 1
+		var mx: float = DUEL_X[idx]
+		draw_colored_polygon(PackedVector2Array([Vector2(mx - 5, 82), Vector2(mx + 5, 82), Vector2(mx, 89)]),
+				Color(1, 0.85, 0.4, 0.8 + 0.2 * sin(_clock * 8.0)))
+	# damage numbers
+	for n in _duel_nums:
+		var age: float = _clock - n.t0
+		if age > 1.0:
+			continue
+		var idx := 0 if sim.sides[0].id == n.side else 1
+		var size := 18 if n.get("big", false) else 13
+		var p := Vector2(DUEL_X[idx] - 10.0, 110.0 - age * 30.0)
+		draw_string(font, p + Vector2(1, 1), n.text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, Color(0, 0, 0, 1.0 - age))
+		draw_string(font, p, n.text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, Color(n.col, 1.0 - age))
+	# title
+	if _duel_t0 >= 0.0 and _clock - _duel_t0 < 1.6:
+		var a := clampf(1.6 - (_clock - _duel_t0), 0.0, 1.0)
+		var title := "ดวล!"
+		var ttw := font.get_string_size(title, HORIZONTAL_ALIGNMENT_LEFT, -1, 26).x
+		draw_string(font, Vector2(240 - ttw / 2.0, 140), title, HORIZONTAL_ALIGNMENT_LEFT, -1, 26, Color(1, 0.85, 0.4, a))
+
+
+func draw_ellipse_shadow(pos: Vector2, fade: float) -> void:
+	draw_set_transform(pos + Vector2(0, 2), 0.0, Vector2(1.0, 0.25))
+	draw_circle(Vector2.ZERO, 30.0, Color(0, 0, 0, 0.45 * fade))
+	draw_set_transform(Vector2.ZERO)

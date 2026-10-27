@@ -1,5 +1,5 @@
 {
-  "_about": "Battle tuning for BattleSim.gd. Started from prototype/battle_core.js; HP x1.6 for longer battles with 2-4 specials each, slime atk raised so line/charge mirror matches are ~50/50 with both sides on BattleAI. Tune with tools/run_sims.gd. Times are seconds, distances are field pixels (480x240).",
+  "_about": "Battle tuning for BattleSim.gd. Started from prototype/battle_core.js; HP x1.6 for longer battles with 2-4 specials each, slime atk raised (6.5) so line/charge mirror matches are ~50/50 with both sides on BattleAI. Tune with tools/run_sims.gd. Times are seconds, distances are field pixels (480x240).",
 
   "sim": {
     "steps_per_second": 15,
@@ -42,13 +42,16 @@
   "_split_note": "Open a lane: troops in it step out to the neighbouring lane at speed_mult x their speed, nobody enters it for duration s, everyone hits crowd_atk x while it is open. margin = px around the lane that also counts as inside.",
   "split": { "label": "แยกเลน", "duration": 2.5, "speed_mult": 2.5, "crowd_atk": 0.95, "margin": 2 },
 
+  "_duel_rules_note": "When both armies are gone and both generals stand, the battle cuts to a duel (BattleSim duel section). offer_time = s each side has to choose duel or retreat (undecided = duel; retreat = lose the battle, general survives). Then turns alternate, the faster general first: start_gap s before the first blow, hit_gap s between blows in a turn, turn_gap s between turns. The player only watches.",
+  "duel_rules": { "offer_time": 8, "start_gap": 1.2, "hit_gap": 0.3, "turn_gap": 0.9 },
+
   "_general_charge_note": "General fights at the front: +mp_on_hit MP per hit it lands, specials launch from where it stands; takes front_take x damage out there, and channel_take x on top while channelling a special; walks back at return_spd_mult x speed when recalled.",
   "general_charge": { "label": "แม่ทัพลงสนาม", "mp_on_hit": 8, "front_take": 1.5, "channel_take": 1.25, "return_spd_mult": 0.8 },
 
   "units": {
     "slime_big": {
       "kind": "big",
-      "hp": 48, "atk": 6.75, "cd": 1.0, "spd": 28,
+      "hp": 48, "atk": 6.5, "cd": 1.0, "spd": 28,
       "reach": 25, "radius": 11,
       "split": {
         "into": "slime_mini",
@@ -73,18 +76,20 @@
       "hp": 64, "atk": 7, "cd": 1.1, "spd": 24,
       "reach": 25, "radius": 10
     },
-    "_generals_note": "Generals start at general_spot behind their army and stay there (hitting only enemies that reach them) until sent in with general_charge; sized so a general-vs-general duel (when all troops are gone) is about even: slime 310 hp / 17 atk vs knight 320 / 18. Each general has a style: front_take = its own damage-taken x when sent in (else general_charge.front_take), ai_charge = how the AI uses it: front (fights at the front from the start), mopup (goes in to finish a beaten army), never. The slime general is a brawler (strong at the front, so it pays more there); the knight general is a commander who should stay back",
+    "_generals_note": "Generals start at general_spot behind their army and stay there (hitting only enemies that reach them) until sent in with general_charge; sized so a general-vs-general duel (when all troops are gone) is about even: slime 310 hp / 17 atk vs knight 320 / 18. Each general has a style: front_take = its own damage-taken x when sent in (else general_charge.front_take), ai_charge = how the AI uses it: front (fights at the front from the start), mopup (goes in to finish a beaten army), never. The slime general is a brawler (strong at the front, so it pays more there); the knight general is a commander who should stay back. duel = style in the one-on-one duel (see duel_rules): hits blows per turn of power each (+- jitter share), each landing with chance accuracy. Slime general: two quick, steady blows; knight general: one heavy, swingy blow (same expected damage per turn, roughly)",
     "general_slime": {
       "kind": "general", "role": "general",
       "hp": 310, "atk": 17, "cd": 1.0, "spd": 24,
       "reach": 28, "radius": 14,
-      "front_take": 2.5, "ai_charge": "front"
+      "front_take": 2.5, "ai_charge": "front",
+      "duel": { "hits": 2, "power": 17, "jitter": 0.15, "accuracy": 0.95 }
     },
     "general_knight": {
       "kind": "general", "role": "general",
       "hp": 320, "atk": 18, "cd": 1.1, "spd": 20,
       "reach": 28, "radius": 14,
-      "front_take": 1.5, "ai_charge": "never"
+      "front_take": 1.5, "ai_charge": "never",
+      "duel": { "hits": 1, "power": 48, "jitter": 0.3, "accuracy": 0.85 }
     }
   },
 
@@ -163,7 +168,7 @@
     }
   },
 
-  "_ai_note": "BattleAI, see scripts/battle/BattleAI.gd (same brain for either side). Casting: every think_interval s, hit value per enemy = share of max HP taken + kill_bonus if it dies, general x general_weight; cast when the best lane holds min_share of the value of hitting every enemy; full MP lowers it to full_mp_min_share; own general below danger_hp with enemies within danger_range: any hit, those enemies x danger_weight. Dodging: reaction_time s after an enemy cast, chance dodge_skill: open the lane if it holds dodge_min_units (general = general_weight); full-field special -> full_response order until it passes. General charge (mop-up): after charge_after s, go in at HP >= charge_hp with troop HP >= charge_adv x enemy's and at most charge_max_enemy_troops enemy troops left; come back at HP < return_hp or troop HP < return_adv x.",
+  "_ai_note": "BattleAI, see scripts/battle/BattleAI.gd (same brain for either side). Casting: every think_interval s, hit value per enemy = share of max HP taken + kill_bonus if it dies, general x general_weight; cast when the best lane holds min_share of the value of hitting every enemy; full MP lowers it to full_mp_min_share; own general below danger_hp with enemies within danger_range: any hit, those enemies x danger_weight. Dodging: reaction_time s after an enemy cast, chance dodge_skill: open the lane if it holds dodge_min_units (general = general_weight); full-field special -> full_response order until it passes. General charge (mop-up): after charge_after s, go in at HP >= charge_hp with troop HP >= charge_adv x enemy's and at most charge_max_enemy_troops enemy troops left; come back at HP < return_hp or troop HP < return_adv x. Duel offer: retreat if our general needs more than duel_retreat_ratio x the turns theirs needs to win.",
   "ai": {
     "think_interval": 0.5,
     "min_share": 0.35,
@@ -182,7 +187,8 @@
     "charge_adv": 1.5,
     "charge_max_enemy_troops": 3,
     "return_hp": 0.4,
-    "return_adv": 0.7
+    "return_adv": 0.7,
+    "duel_retreat_ratio": 1.5
   },
 
   "_sides_note": "Side order matters: units spawn interleaved in this order, and if both armies die on the same step the first side wins (prototype behaviour).",

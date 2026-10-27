@@ -9,6 +9,9 @@
 ##     (same key again closes it); clicking a lane on the field does the same
 ##   G = send the general in / call it back
 ##   Space = special, Enter = start / again
+## When both armies are gone the battle stops and asks: duel (Enter) or pull
+## the general out (3, the battle is lost but the general survives). The duel
+## itself plays out on its own; the player watches.
 ## Specials have a warning time instead of a freeze: the target lane lights up
 ## and the battle keeps running, so there is time to open that lane (or pull
 ## back from a full-field wave). A lane special fired by the player runs down
@@ -42,6 +45,11 @@ const LANE_KEYS := ["Q", "A", "Z"]
 @onready var formation_list: Container = %FormationList
 @onready var formation_info: Label = %FormationInfo
 @onready var start_btn: Button = %StartButton
+@onready var duel_panel: Control = %DuelPanel
+@onready var duel_title: Label = %DuelTitle
+@onready var duel_info: Label = %DuelInfo
+@onready var duel_btn: Button = %DuelButton
+@onready var duel_retreat_btn: Button = %DuelRetreatButton
 @onready var result_panel: Control = %ResultPanel
 @onready var result_label: Label = %ResultLabel
 @onready var result_detail: Label = %ResultDetail
@@ -106,6 +114,8 @@ func _ready() -> void:
 	special_btn.pressed.connect(_cast_special)
 	start_btn.pressed.connect(_start_fight)
 	again_btn.pressed.connect(_back_to_setup)
+	duel_btn.pressed.connect(_duel_choice.bind("duel"))
+	duel_retreat_btn.pressed.connect(_duel_choice.bind("retreat"))
 
 	var form_group := ButtonGroup.new()
 	for key in cfg.formations.keys():
@@ -134,7 +144,12 @@ func _process(delta: float) -> void:
 			view.handle_events(events)
 			for e in events:
 				if e.type == "over":
+					duel_panel.hide()
 					_show_result(e.winner)
+				elif e.type == "duel_offer":
+					_show_duel_offer()
+				elif e.type == "duel_start":
+					duel_panel.hide()
 		view.alpha = clampf(_acc / _dt, 0.0, 1.0)
 	else:
 		view.alpha = 1.0
@@ -152,6 +167,13 @@ func _unhandled_input(event: InputEvent) -> void:
 				get_viewport().set_input_as_handled()
 		return
 	if not (event is InputEventKey and event.pressed and not event.echo):
+		return
+	if phase == "fight" and sim != null and sim.phase == "offer":
+		match event.keycode:
+			KEY_ENTER, KEY_KP_ENTER:
+				_duel_choice("duel")
+			KEY_3, KEY_ESCAPE:
+				_duel_choice("retreat")
 		return
 	match event.keycode:
 		KEY_1:
@@ -182,6 +204,7 @@ func _unhandled_input(event: InputEvent) -> void:
 func _back_to_setup() -> void:
 	phase = "setup"
 	result_panel.hide()
+	duel_panel.hide()
 	setup_panel.show()
 	_pick_formation(formation)
 	_set_order(order)
@@ -220,7 +243,10 @@ func _show_result(winner: String) -> void:
 	phase = "over"
 	var mine := sim.troop_count(player_side)
 	var theirs := sim.troop_count(_enemy_side)
-	if winner == player_side:
+	if winner == "draw" and sim.retreated != "":
+		result_label.text = "ต่างฝ่ายต่างถอย"
+		result_detail.text = "แม่ทัพทั้งสองฝั่งถอยทัพ · %.0f วินาที" % sim.time
+	elif winner == player_side:
 		result_label.text = "ชนะ!"
 		result_detail.text = _defeat_text(_enemy_side) + "\nเหลือทหาร %d · %.0f วินาที" % [mine, sim.time]
 	elif winner == "draw":
@@ -234,9 +260,37 @@ func _show_result(winner: String) -> void:
 
 
 func _defeat_text(loser: String) -> String:
+	match sim.defeat_reason(loser):
+		"retreat":
+			return "แม่ทัพ%sถอยทัพ (รอดกลับไป)" % _side_label(loser)
+		"duel":
+			return "แม่ทัพ%sแพ้การดวล" % _side_label(loser)
 	if sim.defeat_reason(loser) == "general":
 		return "แม่ทัพ%sล้ม" % _side_label(loser)
 	return "ทัพ%sถูกกวาดล้าง" % _side_label(loser)
+
+
+# --- duel ------------------------------------------------------------------------
+
+func _show_duel_offer() -> void:
+	var mine := sim.general_of(player_side)
+	var theirs := sim.general_of(_enemy_side)
+	duel_title.text = "ทหารหมดทั้งสองฝั่ง: ดวลแม่ทัพ?"
+	duel_info.text = "แม่ทัพ%s %d/%d  vs  แม่ทัพ%s %d/%d\nถอยทัพ = แพ้ศึกนี้ แต่แม่ทัพรอด" % [
+			_side_label(player_side), ceili(mine.hp), int(mine.max_hp),
+			_side_label(_enemy_side), ceili(theirs.hp), int(theirs.max_hp)]
+	duel_btn.disabled = false
+	duel_retreat_btn.disabled = false
+	duel_panel.show()
+
+
+func _duel_choice(choice: String) -> void:
+	if sim == null or sim.phase != "offer":
+		return
+	sim.duel_choice(player_side, choice)
+	duel_btn.disabled = true
+	duel_retreat_btn.disabled = true
+	duel_title.text = "รอฝ่ายตรงข้าม..."
 
 
 # --- commands ----------------------------------------------------------------
@@ -290,14 +344,24 @@ func _update_hud() -> void:
 		var cost := float(s.special.mp_cost)
 		special_btn.text = "%s (%d) [Space]" % [s.special.get("label", "special"), int(cost)]
 		special_btn.disabled = phase != "fight" or not sim.special_ready(player_side)
+	if sim.phase == "offer" and not duel_btn.disabled:
+		duel_btn.text = "ดวล [Enter] %d" % ceili(maxf(0.0, float(sim.duel.offer_left)))
+	elif duel_btn.text != "ดวล [Enter]":
+		duel_btn.text = "ดวล [Enter]"
+	# The duel close-up gets the whole screen.
+	$Hud/Root/TopBar.visible = sim.phase != "duel"
+	$Hud/Root/BottomBar.visible = sim.phase != "duel"
+	var field := phase == "fight" and sim.phase == "field"
+	for b in _order_buttons.values():
+		b.disabled = not field and phase != "setup"
 	for i in _lane_buttons.size():
 		_lane_buttons[i].set_pressed_no_signal(s.split_lane == i)
-		_lane_buttons[i].disabled = phase != "fight"
+		_lane_buttons[i].disabled = not field
 	if _order_buttons.has(s.order_name) and not _order_buttons[s.order_name].button_pressed:
 		_order_buttons[s.order_name].set_pressed_no_signal(true)
 	var g := sim.general_of(player_side)
 	general_btn.visible = g != null
-	general_btn.disabled = phase != "fight" or g == null or not g.alive
+	general_btn.disabled = not field or g == null or not g.alive
 	general_btn.set_pressed_no_signal(s.gen_charge)
 	var gc: Dictionary = cfg.get("general_charge", {})
 	general_btn.text = ("กลับหลังแนว [G]" if s.gen_charge else "%s [G]" % gc.get("label", "แม่ทัพลงสนาม"))

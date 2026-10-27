@@ -52,6 +52,7 @@ const DEFAULTS := {
 	"charge_max_enemy_troops": 3,
 	"return_hp": 0.4,
 	"return_adv": 0.7,
+	"duel_retreat_ratio": 1.5,
 }
 
 var side_id: String
@@ -93,6 +94,9 @@ static func merged(ai_cfg: Dictionary) -> Dictionary:
 func think(sim, dt: float) -> void:
 	var s = sim.get_side(side_id)
 	if s == null:
+		return
+	if sim.phase == "offer":
+		_decide_duel(sim, s)
 		return
 	if do_dodge:
 		_think_dodge(sim, s)
@@ -282,3 +286,27 @@ func _think_gcharge(sim, s) -> void:
 			sim.set_general_charge(side_id, true)
 	elif hp < float(tuning.return_hp) or own < theirs * float(tuning.return_adv):
 		sim.set_general_charge(side_id, false)
+
+
+# --- duel offer --------------------------------------------------------------------
+
+## Duel or retreat when both armies are gone: count the turns each general
+## needs to finish the other (expected damage per turn, the faster one strikes
+## first). Retreat if ours needs more than duel_retreat_ratio x theirs.
+func _decide_duel(sim, s) -> void:
+	var g = sim.general_of(s.id)
+	var e = null
+	for o in sim.sides:
+		if o != s:
+			e = sim.general_of(o.id)
+	if g == null or e == null:
+		sim.duel_choice(side_id, "duel")
+		return
+	var ours: float = ceilf(e.hp / maxf(0.001, sim.duel_turn_damage(g)))
+	var theirs: float = ceilf(g.hp / maxf(0.001, sim.duel_turn_damage(e)))
+	if g.spd < e.spd:
+		ours += 0.5
+	elif e.spd < g.spd:
+		theirs += 0.5
+	var choice := "retreat" if ours > theirs * float(tuning.duel_retreat_ratio) else "duel"
+	sim.duel_choice(side_id, choice)

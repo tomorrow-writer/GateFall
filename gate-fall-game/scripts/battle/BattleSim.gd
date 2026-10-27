@@ -146,6 +146,13 @@ var units: Array[Unit] = []
 var sides: Array[Army] = []
 var time: float = 0.0
 var over: String = ""  # "" while running, then a side id or "draw"
+## "field" = the army battle; "offer" = troops gone on both sides, each side
+## chooses duel or retreat; "duel" = the generals' one-on-one (watch only).
+var phase: String = "field"
+## Duel state: {"order": [side ids in attack order], "turn": index into order,
+## "hits_left", "wait": s to the next blow, "choices": side id -> "duel"/"retreat"}
+var duel: Dictionary = {}
+var retreated: String = ""  # side id that pulled its general out ("" = none)
 var record_events: bool = true
 
 var _events: Array = []
@@ -277,6 +284,9 @@ func step(dt: float) -> Array:
 	if over != "":
 		return _take_events()
 	time += dt
+	if phase != "field":
+		_step_duel(dt)
+		return _take_events()
 	var live: Array[Unit] = []
 	for u in units:
 		if u.alive:
@@ -442,6 +452,8 @@ func step(dt: float) -> Array:
 		over = b.id
 	elif time > _time_limit:
 		over = "draw"
+	elif _both_armies_gone():
+		_offer_duel()
 	if over != "":
 		_clear_targets()
 		if record_events:
@@ -459,7 +471,7 @@ func _take_events() -> Array:
 ## freezes the troops for switch_delay seconds.
 func set_order(side_id: String, order_name: String) -> void:
 	var s := get_side(side_id)
-	if s == null or not cfg.orders.has(order_name) or s.order_name == order_name:
+	if s == null or phase != "field" or not cfg.orders.has(order_name) or s.order_name == order_name:
 		return
 	_apply_order(s, order_name)
 	if over == "" and time > 0.0:
@@ -472,7 +484,7 @@ func set_order(side_id: String, order_name: String) -> void:
 ## The same lane again closes it early. Returns false without lanes.
 func split(side_id: String, lane: int) -> bool:
 	var s := get_side(side_id)
-	if s == null or over != "" or lane < 0 or lane >= _lanes:
+	if s == null or over != "" or phase != "field" or lane < 0 or lane >= _lanes:
 		return false
 	if s.split_lane == lane:
 		s.split_lane = -1
@@ -492,7 +504,7 @@ func split(side_id: String, lane: int) -> bool:
 func set_general_charge(side_id: String, on: bool) -> void:
 	var s := get_side(side_id)
 	var g := general_of(side_id)
-	if s == null or g == null or not g.alive or over != "" or s.gen_charge == on:
+	if s == null or g == null or not g.alive or over != "" or phase != "field" or s.gen_charge == on:
 		return
 	s.gen_charge = on
 	s.gen_returning = not on
@@ -547,7 +559,7 @@ func cast(side_id: String, lane: int = -1) -> bool:
 ## True if the side has a special, enough MP, and none warming up or running.
 func special_ready(side_id: String) -> bool:
 	var s := get_side(side_id)
-	return over == "" and s != null and not s.special.is_empty() and s.wave.is_empty() \
+	return over == "" and phase == "field" and s != null and not s.special.is_empty() and s.wave.is_empty() \
 			and s.pending.is_empty() and s.mp >= float(s.special.mp_cost)
 
 
@@ -617,9 +629,14 @@ func troop_count(side_id: String) -> int:
 	return n
 
 
-## Why a side lost: "general" (its general fell) or "wiped" (no units left).
+## Why a side lost: "retreat" (pulled out before the duel), "duel" (its
+## general fell in the duel), "general" (fell on the field) or "wiped".
 func defeat_reason(side_id: String) -> String:
+	if retreated == side_id:
+		return "retreat"
 	var g := general_of(side_id)
+	if g != null and not g.alive and not duel.is_empty() and duel.has("order"):
+		return "duel"
 	if g != null and not g.alive:
 		return "general"
 	return "wiped"
@@ -638,6 +655,159 @@ func get_side(side_id: String) -> Army:
 		if s.id == side_id:
 			return s
 	return null
+
+
+# --- duel ----------------------------------------------------------------------
+# When both armies are gone (generals still standing), the battle cuts to a
+# one-on-one duel like DF. First each side chooses: duel, or retreat (the
+# general survives but the battle is lost). Then the generals trade blows in
+# turns, the faster one first. Each general's "duel" style in the config:
+#   hits: blows per turn · power: damage per blow · jitter: +- share of power
+#   accuracy: chance each blow lands
+# so one general can strike twice lightly and another once and hard. The
+# player only watches; no specials. Timing (duel_rules): offer_time = how long
+# an undecided side has before the duel starts anyway (headless sims: AI picks
+# at once), turn_gap / hit_gap = s between turns / blows.
+
+## Choose for a side during the offer: "duel" or "retreat".
+func duel_choice(side_id: String, choice: String) -> void:
+	if phase != "offer" or not duel.choices.has(side_id) or duel.choices[side_id] != "":
+		return
+	duel.choices[side_id] = "retreat" if choice == "retreat" else "duel"
+	if record_events:
+		_events.append({"type": "duel_choice", "side": side_id, "choice": duel.choices[side_id]})
+
+
+## A general's duel style with defaults filled in.
+func duel_style(g: Unit) -> Dictionary:
+	var st: Dictionary = {"hits": 1, "power": g.atk * 2.0, "jitter": 0.2, "accuracy": 1.0}
+	var d: Dictionary = cfg.units.get(g.type_id, {}).get("duel", {})
+	for k in d:
+		st[k] = d[k]
+	return st
+
+
+## Expected damage per turn of a general in the duel.
+func duel_turn_damage(g: Unit) -> float:
+	var st := duel_style(g)
+	return float(st.hits) * float(st.power) * float(st.accuracy)
+
+
+func _both_armies_gone() -> bool:
+	for s in sides:
+		var g := general_of(s.id)
+		if g == null or not g.alive or s.troops > 0 or troop_count(s.id) > 0:
+			return false
+	return true
+
+
+func _rules() -> Dictionary:
+	var r := {"offer_time": 8.0, "turn_gap": 0.9, "hit_gap": 0.3, "start_gap": 1.2}
+	var c: Dictionary = cfg.get("duel_rules", {})
+	for k in c:
+		if not str(k).begins_with("_"):
+			r[k] = c[k]
+	return r
+
+
+func _offer_duel() -> void:
+	phase = "offer"
+	var choices := {}
+	for s in sides:
+		choices[s.id] = ""
+		s.pending = {}
+		s.wave = {}
+		s.split_lane = -1
+		s.gen_charge = false
+		s.gen_returning = false
+	duel = {"choices": choices, "offer_left": float(_rules().offer_time)}
+	_clear_targets()
+	for u in units:
+		u.walking = false
+	if record_events:
+		_events.append({"type": "duel_offer"})
+
+
+func _step_duel(dt: float) -> void:
+	for u in units:
+		u.anim += dt
+		u.fx = maxf(0.0, u.fx - dt)
+		u.swing = maxf(0.0, u.swing - dt)
+	if phase == "offer":
+		for s in sides:
+			if s.brain != null and duel.choices[s.id] == "":
+				s.brain.think(self, dt)
+		duel.offer_left -= dt
+		var undecided := false
+		for k in duel.choices:
+			if duel.choices[k] == "":
+				undecided = true
+		if undecided and duel.offer_left > 0.0:
+			return
+		_resolve_offer()
+		return
+	duel.wait -= dt
+	if duel.wait > 0.0:
+		return
+	var r := _rules()
+	var atk_side: String = duel.order[duel.turn]
+	var def_side: String = duel.order[1 - duel.turn]
+	var a := general_of(atk_side)
+	var v := general_of(def_side)
+	var st := duel_style(a)
+	var hit := rng.next() < float(st.accuracy)
+	var dmg := 0.0
+	if hit:
+		dmg = float(st.power) * (1.0 + (rng.next() * 2.0 - 1.0) * float(st.jitter))
+		v.hp -= dmg
+		v.fx = float(_combat.hit_flash)
+	a.swing = float(_combat.swing_time)
+	duel.hits_left -= 1
+	if record_events:
+		_events.append({"type": "duel_hit", "side": atk_side, "by": a.id, "id": v.id, "dmg": dmg,
+				"miss": not hit, "x": v.x, "y": v.y})
+	if v.hp <= 0.0:
+		_kill(v)
+		over = atk_side
+		if record_events:
+			_events.append({"type": "over", "winner": over})
+		return
+	if duel.hits_left > 0:
+		duel.wait = float(r.hit_gap)
+	else:
+		duel.turn = 1 - duel.turn
+		duel.hits_left = int(duel_style(general_of(duel.order[duel.turn])).hits)
+		duel.wait = float(r.turn_gap)
+
+
+func _resolve_offer() -> void:
+	var out: Array = []
+	for k in duel.choices:
+		if duel.choices[k] == "retreat":
+			out.append(k)
+	if out.size() > 0:
+		if out.size() == 1:
+			retreated = out[0]
+			over = sides[1].id if sides[0].id == retreated else sides[0].id
+		else:
+			over = "draw"
+			retreated = out[0]
+		if record_events:
+			_events.append({"type": "duel_retreat", "sides": out})
+			_events.append({"type": "over", "winner": over})
+		return
+	# Duel: generals face each other, faster one strikes first.
+	phase = "duel"
+	var ga := general_of(sides[0].id)
+	var gb := general_of(sides[1].id)
+	var first := 0 if ga.spd >= gb.spd else 1
+	var order := [sides[first].id, sides[1 - first].id]
+	duel.order = order
+	duel.turn = 0
+	duel.hits_left = int(duel_style(general_of(order[0])).hits)
+	duel.wait = float(_rules().start_gap)
+	if record_events:
+		_events.append({"type": "duel_start", "first": order[0]})
 
 
 # --- internals ----------------------------------------------------------------
