@@ -45,6 +45,8 @@ var _sprites := {}  # unit type id -> {"anims": {name: {tex, frames, fps, loop}}
 var _fx_sprites := {}  # effect id -> {tex, w, h, frames, fps, loop, foot}
 var _duel_t0 := -1.0  # view clock when the duel started
 var _duel_nums: Array = []  # {side (target), text, t0, col}
+var _bg: Texture2D = null  # field.background from the config (null = drawn placeholder)
+var _bg_path := ""
 
 
 func bind(s: BattleSim) -> void:
@@ -183,7 +185,17 @@ func _pos(u) -> Vector2:
 
 
 func _draw_field() -> void:
-	# Sky (top band, behind the HUD)
+	# Painted background (480x270: horizon at y 104, ground to y 240, HUD strip below).
+	var path := ""
+	if sim != null:
+		path = str(sim.cfg.field.get("background", ""))
+	if path != _bg_path:
+		_bg_path = path
+		_bg = load(path) as Texture2D if path != "" and ResourceLoader.exists(path) else null
+	if _bg != null:
+		draw_texture_rect(_bg, Rect2(0, 0, 480, 270), false)
+		return
+	# Placeholder: sky (top band, behind the HUD)
 	var sky_top := Color("1d2a48")
 	var sky_low := Color("d98c5a")
 	for i in 8:

@@ -7,7 +7,9 @@
     "seed": 1
   },
 
+  "_field_note": "background = painted 480x270 image behind the battle (horizon at y 104, ground y 104-240, darker HUD strip below); leave it out to get the drawn placeholder.",
   "field": {
+    "background": "res://assets/backgrounds/battle_plains_dusk.png",
     "width": 480,
     "x_min": 10,
     "x_max": 470,
