@@ -42,6 +42,7 @@ var _flash_col := WAVE
 ## Side the player commands: enemy warnings are drawn red, own ones in the special's colour.
 var player_side := ""
 var _sprites := {}  # unit type id -> {"anims": {name: {tex, frames, fps, loop}}, "foot": Vector2, "height"}
+var _fx_sprites := {}  # effect id -> {tex, w, h, frames, fps, loop, foot}
 var _duel_t0 := -1.0  # view clock when the duel started
 var _duel_nums: Array = []  # {side (target), text, t0, col}
 
@@ -49,6 +50,7 @@ var _duel_nums: Array = []  # {side (target), text, t0, col}
 func bind(s: BattleSim) -> void:
 	sim = s
 	_load_sprites()
+	_load_fx_sprites()
 	_prev.clear()
 	_died_at.clear()
 	_born_at.clear()
@@ -73,8 +75,13 @@ func handle_events(events: Array) -> void:
 			"hit":
 				_fx.append({"kind": "spark", "pos": Vector2(e.x, e.y - 8), "t0": _clock, "dur": 0.2})
 			"wavehit":
-				_fx.append({"kind": "burst", "pos": Vector2(e.x, e.y - 8), "t0": _clock, "dur": 0.4,
-						"col": _special_color(sim.get_side(e.get("by", "")))})
+				var by = sim.get_side(e.get("by", ""))
+				var hit_id := _special_fx(by, "hit")
+				if hit_id != "":
+					_add_fx_sprite(hit_id, Vector2(e.x, e.y - 6), float(by.facing))
+				else:
+					_fx.append({"kind": "burst", "pos": Vector2(e.x, e.y - 8), "t0": _clock, "dur": 0.4,
+							"col": _special_color(by)})
 			"die":
 				_died_at[e.id] = _clock
 				_fx.append({"kind": "poof", "pos": Vector2(e.x, e.y - 6), "t0": _clock, "dur": 0.35})
@@ -84,8 +91,15 @@ func handle_events(events: Array) -> void:
 				_flash = 0.12
 				_flash_col = _special_color(sim.get_side(e.side))
 			"launch":
+				var ls = sim.get_side(e.side)
 				_flash = 0.2
-				_flash_col = _special_color(sim.get_side(e.side))
+				_flash_col = _special_color(ls)
+				var launch_id := _special_fx(ls, "launch")
+				var g = sim.general_of(e.side)
+				if launch_id != "" and g != null:
+					# x0 is in the caster's coordinates (measured from its own edge)
+					var lx := float(e.x0) if ls.facing == 1 else float(sim.cfg.field.width) - float(e.x0)
+					_add_fx_sprite(launch_id, Vector2(lx, g.y), float(ls.facing))
 			"duel_offer":
 				_flash = 0.3
 				_flash_col = Color(1, 1, 1)
@@ -206,11 +220,36 @@ func _draw_wave(s) -> void:
 		fade = lerpf(1.0, maxf(0.25, float(sp.get("min_damage_pct", 100)) / 100.0), k)
 	var top := maxf(112.0, float(w.y0))
 	var bot := minf(238.0, float(w.y1))
+	var wave_id := _special_fx(s, "wave")
+	if wave_id != "":
+		_draw_wave_sprites(s, wave_id, x0, x1, top, bot, fade, col)
+		return
 	draw_rect(Rect2(x0, top, x1 - x0, bot - top), Color(col, 0.35 * fade))
 	var n := int((bot - top) / 18.0)
 	for i in n:
 		var cy := top + 8.0 + i * 18.0
 		draw_circle(Vector2(lerpf(x0, x1, 0.7) + sin(_clock * 20.0 + i) * 3.0, cy), 7.0, Color(col, 0.7 * fade))
+
+
+## Wave drawn from its sprite: one crest per lane it covers, the crest's front
+## (the sprite's foot) on the wave front and its base on the lane's bottom edge,
+## lanes a few px out of step (position and frame) so the wall looks alive.
+## Fades with range like the placeholder band.
+const WAVE_STAGGER := [0.0, 6.0, 3.0]
+
+func _draw_wave_sprites(s, id: String, x0: float, x1: float, top: float, bot: float, fade: float, col: Color) -> void:
+	var f := float(s.facing)
+	var front := x1 if f > 0.0 else x0
+	# fade in over the first 30 px so it rises out of the launch splash instead
+	# of popping up on top of the general
+	fade *= clampf((float(s.wave.x) - float(s.wave.x0)) / 30.0, 0.0, 1.0)
+	draw_rect(Rect2(x0, top, x1 - x0, bot - top), Color(col, 0.10 * fade))
+	for i in sim.lane_count():
+		var b: Vector2 = sim.lane_bounds(i)
+		if b.y <= top or b.x >= bot:
+			continue  # lane outside the wave (single-lane specials)
+		var px := front - f * float(WAVE_STAGGER[i % WAVE_STAGGER.size()])
+		_draw_fx_sprite(id, _clock + i * 0.11, Vector2(px, b.y), f, Color(1, 1, 1, 0.92 * fade))
 
 
 ## Cavalry charge: a row of placeholder horsemen galloping down the lane,
@@ -423,6 +462,8 @@ func _draw_fx(f: Dictionary) -> void:
 			draw_arc(f.pos, 4.0 + k * 10.0, 0, TAU, 16, Color(f.get("col", WAVE), 1.0 - k), 2.0)
 		"poof":
 			draw_arc(f.pos, 3.0 + k * 9.0, 0, TAU, 12, Color(1, 1, 1, 0.8 * (1.0 - k)), 1.0)
+		"sprite":
+			_draw_fx_sprite(f.id, _clock - f.t0, f.pos, f.facing, Color(1, 1, 1, 1))
 
 
 ## Faint lane guides while fighting; an opened lane is striped in the player's
@@ -637,6 +678,59 @@ func _load_sprites() -> void:
 		var foot: Array = d.get("foot", [fw / 2, fh - 1])
 		_sprites[id] = {"anims": anims, "w": fw, "h": fh, "foot": Vector2(foot[0], foot[1]),
 				"height": float(d.get("height", fh))}
+
+
+# Config "fx_sprites": { "<effect id>": {
+#     "file": "res://assets/fx/<id>.png",  one strip, frames left to right, moving RIGHT
+#     "frame": [w, h], "foot": [x, y],      foot = frame pixel placed on the effect's point
+#     "frames": n, "fps": f, "loop": bool } }
+# A special picks its effects with "fx": {"wave": id, "hit": id, "launch": id};
+# any role without a loaded sprite falls back to the placeholder drawing.
+
+func _load_fx_sprites() -> void:
+	_fx_sprites.clear()
+	var defs: Dictionary = sim.cfg.get("fx_sprites", {})
+	for id in defs:
+		if str(id).begins_with("_"):
+			continue
+		var d: Dictionary = defs[id]
+		var path := str(d.get("file", ""))
+		if not ResourceLoader.exists(path):
+			continue
+		var tex: Texture2D = load(path)
+		var fw := int(d.frame[0])
+		var fh := int(d.frame[1])
+		var foot: Array = d.get("foot", [fw / 2, fh - 1])
+		_fx_sprites[id] = {"tex": tex, "w": fw, "h": fh, "foot": Vector2(foot[0], foot[1]),
+				"frames": int(d.get("frames", maxi(1, tex.get_width() / fw))),
+				"fps": float(d.get("fps", 12)), "loop": bool(d.get("loop", false))}
+
+
+## The effect sprite a side's special uses for role ("wave", "hit", "launch"); "" = none.
+func _special_fx(s, role: String) -> String:
+	if s == null or s.special.is_empty():
+		return ""
+	var id := str(s.special.get("fx", {}).get(role, ""))
+	return id if _fx_sprites.has(id) else ""
+
+
+## One-shot effect: plays its frames once at pos, then is dropped with the other fx.
+func _add_fx_sprite(id: String, pos: Vector2, facing: float) -> void:
+	var d: Dictionary = _fx_sprites[id]
+	_fx.append({"kind": "sprite", "id": id, "pos": pos, "facing": facing, "t0": _clock,
+			"dur": float(d.frames) / maxf(0.001, float(d.fps))})
+
+
+func _draw_fx_sprite(id: String, t: float, pos: Vector2, facing: float, col: Color) -> void:
+	var d: Dictionary = _fx_sprites[id]
+	var i := int(t * float(d.fps))
+	i = i % int(d.frames) if d.loop else mini(i, int(d.frames) - 1)
+	var w: float = d.w
+	var h: float = d.h
+	var foot: Vector2 = d.foot
+	draw_set_transform(pos, 0.0, Vector2(facing, 1.0))
+	draw_texture_rect_region(d.tex, Rect2(-foot.x, -foot.y, w, h), Rect2(i * w, 0, w, h), col)
+	draw_set_transform(Vector2.ZERO)
 
 
 ## Which animation a unit is in right now.
