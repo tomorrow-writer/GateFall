@@ -6,7 +6,7 @@
 ##   while sim.over == "":
 ##       for e in sim.step(1.0 / 15.0):
 ##           ...  # BattleView plays animations for e.type (see "Events" below)
-##   sim.cast("S")             # player presses the special button
+##   sim.cast("S", -1, 2)      # player casts special slot 2 (large)
 ##   sim.split("S", 1)         # open the middle lane
 ##   sim.set_order("S", "retreat")
 ##   sim.set_general_charge("S", true)
@@ -21,6 +21,15 @@
 ## launches from the general's position (start_x if the side has no general).
 ## "range" = px it travels before fading out; damage drops to min_damage_pct
 ## along the way, so pulling back (retreat) takes less of it.
+##
+## Three specials per general (units.<general>.specials = [small, medium,
+## large], slots 0..2): bigger = more MP, longer warning, more power. Each has
+## a focus: "troops" (a wave/charge down lanes), "general" (targets: general,
+## a bolt aimed at the enemy general's lane: it passes troops but each troop
+## it goes through soaks block_pct of its power, so troops in front shield the
+## general) or "defense" (type guard: after the warning the whole side takes
+## take_mult x damage, specials included, for duration s). A side without a
+## general's list uses sides[].special as its only slot.
 ##
 ## Commands during the fight (either side, player or AI, same code):
 ##   set_order   charge / hold / retreat. Changing order costs switch_delay s
@@ -37,7 +46,7 @@
 ##               and walks back slower when recalled.
 ##
 ## Events: hit, die, spawn, cast (warning starts), launch, wavehit, cancel,
-## split, split_end, order, gcharge, over.
+## guard, guard_end, split, split_end, order, gcharge, over.
 ##
 ## AI: a side with a BattleAI brain (overrides "ai", "dodge", "gcharge") gets
 ## its casts, dodges and general charges decided by the same code either side.
@@ -88,7 +97,11 @@ class Army:
 	var retreating: bool = false  # order "retreat": walk back, no attacks
 	var mp_regen: float
 	var hold_range: float  # <= 0 means the order never stops to wait
-	var special: Dictionary  # empty = no special
+	var special: Dictionary  # the special warming up / running (last cast); empty = none
+	var specials: Array = []  # slots: [small, medium, large] (fewer for simple configs)
+	var slot_casts: Array = []  # casts per slot this battle
+	var auto_slot: int = -1  # slot auto_cast fires (-1 = the largest)
+	var guard: Dictionary = {}  # defence special running {take, left, total, special}; empty = none
 	var auto_cast: bool
 	var mp: float
 	var mp_max: float
@@ -183,9 +196,10 @@ static func load_config(path: String = "res://data/battle_config.json") -> Dicti
 	return data
 
 
-## overrides: per side id, any of {"formation", "order", "auto_cast", "ai",
-## "dodge", "gcharge"}.
-##   auto_cast: fire the special as soon as it is ready (best lane).
+## overrides: per side id, any of {"formation", "order", "auto_cast",
+## "auto_slot", "ai", "dodge", "gcharge"}.
+##   auto_cast: fire special auto_slot (default: the largest) as soon as it is
+##              ready (best lane).
 ##   ai: BattleAI decides when and where to cast (enemy side in play and in run_sims).
 ##   dodge: BattleAI opens lanes / pulls back against enemy specials (default = ai).
 ##   gcharge: "never" | "always" | "ai" — who sends the general in (default
@@ -213,7 +227,11 @@ func _init(config: Dictionary, overrides: Dictionary = {}, shared_rng: BattleRng
 		s.facing = int(sd.facing)
 		_apply_formation(s, ov.get("formation", sd.formation))
 		_apply_order(s, ov.get("order", sd.order))
-		s.special = cfg.specials.get(sd.get("special", ""), {})
+		s.specials = _specials_for(sd)
+		s.special = s.specials[0] if not s.specials.is_empty() else {}
+		s.slot_casts.resize(s.specials.size())
+		s.slot_casts.fill(0)
+		s.auto_slot = int(ov.get("auto_slot", s.specials.size() - 1))
 		s.auto_cast = bool(ov.get("auto_cast", false))
 		s.mp = float(sd.mp_start)
 		s.mp_max = float(sd.mp_max)
@@ -299,6 +317,12 @@ func step(dt: float) -> Array:
 	for s in sides:
 		s.mp = minf(s.mp_max, s.mp + dt * s.mp_regen)
 		s.stagger = maxf(0.0, s.stagger - dt)
+		if not s.guard.is_empty():
+			s.guard.left -= dt
+			if s.guard.left <= 0.0:
+				s.guard = {}
+				if record_events:
+					_events.append({"type": "guard_end", "side": s.id})
 		if s.split_lane >= 0:
 			s.split_left -= dt
 			if s.split_left <= 0.0:
@@ -309,9 +333,9 @@ func step(dt: float) -> Array:
 	for s in sides:
 		if s.brain != null:
 			s.brain.think(self, dt)
-		if s.auto_cast and (s.brain == null or not s.brain.do_cast) and special_ready(s.id) \
-				and time > float(s.special.auto_cast_after):
-			cast(s.id)
+		if s.auto_cast and (s.brain == null or not s.brain.do_cast) and special_ready(s.id, s.auto_slot) \
+				and time > float(s.specials[s.auto_slot].get("auto_cast_after", 0)):
+			cast(s.id, -1, s.auto_slot)
 	for s in sides:
 		if not s.pending.is_empty():
 			_step_pending(s, dt)
@@ -448,6 +472,8 @@ func step(dt: float) -> Array:
 				if us.flank != 1.0 and engaged.get(v.id, 0) >= us.flank_min:
 					dmg *= us.flank
 				dmg *= v.side.form_take
+				if not v.side.guard.is_empty():
+					dmg *= float(v.side.guard.take)
 				if us.split_lane >= 0:
 					dmg *= crowd_atk
 				# Out at the front (sent in, or recalled but not back yet).
@@ -550,22 +576,38 @@ func _clear_targets() -> void:
 		u.tg = null
 
 
-## Start a side's special. Returns false if not ready.
+## Start one of a side's specials. Returns false if not ready.
+## slot: 0 small, 1 medium, 2 large; -1 = the largest one ready now.
 ## lane: for a lane special, the lane to hit; -1 = best lane now
-## (BattleAI.best_lane), so the player's one button aims sensibly.
-## MP is paid now; the special launches after its "telegraph" warning time.
-func cast(side_id: String, lane: int = -1) -> bool:
-	if not special_ready(side_id):
-		return false
+## (BattleAI.best_lane), so the player's one button aims sensibly. A special
+## aimed at the general (targets: general) always runs down the enemy
+## general's lane; a guard covers the caster's own side.
+## MP is paid now; the special takes effect after its "telegraph" warning time.
+func cast(side_id: String, lane: int = -1, slot: int = -1) -> bool:
 	var s := get_side(side_id)
-	var sp := s.special
+	if s == null:
+		return false
+	if slot < 0:
+		slot = largest_ready(side_id)
+	if slot < 0 or not special_ready(side_id, slot):
+		return false
+	var sp: Dictionary = s.specials[slot]
+	s.special = sp
 	var span := int(sp.get("lanes", 0))
 	var y0 := float(_field.y_min) - 20.0
 	var y1 := float(_field.y_max) + 20.0
-	if span > 0 and _lanes > 0:
+	if is_guard(sp):
+		lane = -1
+	elif str(sp.get("targets", "all")) == "general" and _lanes > 0:
+		var eg := _enemy_general(s)
+		lane = lane_of(eg.y) if eg != null else 1
+		span = 1
+		y0 = lane_bounds(lane).x
+		y1 = lane_bounds(lane).y
+	elif span > 0 and _lanes > 0:
 		span = mini(span, _lanes)
 		if lane < 0:
-			lane = BattleAI.best_lane(self, s, BattleAI.merged(cfg.get("ai", {}))).lane
+			lane = BattleAI.best_lane(self, s, BattleAI.merged(cfg.get("ai", {})), null, sp).lane
 		lane = clampi(lane, 0, _lanes - span)
 		y0 = lane_bounds(lane).x
 		y1 = lane_bounds(lane + span - 1).y
@@ -573,40 +615,72 @@ func cast(side_id: String, lane: int = -1) -> bool:
 		lane = -1
 	s.mp -= float(sp.mp_cost)
 	s.casts += 1
+	s.slot_casts[slot] += 1
 	var tele := float(sp.get("telegraph", 0))
-	s.pending = {"t": tele, "total": tele, "lane": lane, "y0": y0, "y1": y1}
+	s.pending = {"t": tele, "total": tele, "lane": lane, "y0": y0, "y1": y1, "slot": slot}
 	if record_events:
 		_events.append({"type": "cast", "side": s.id, "special": sp, "lane": lane, "y0": y0, "y1": y1,
-				"telegraph": tele})
+				"telegraph": tele, "slot": slot})
 	if tele <= 0.0:
 		_launch(s)
 	return true
 
 
-## True if the side has a special, enough MP, and none warming up or running.
-func special_ready(side_id: String) -> bool:
+## True if the side can start a special now: slot -1 = any of them.
+## Not while one is warming up or running; a guard not while a guard is up.
+func special_ready(side_id: String, slot: int = -1) -> bool:
 	var s := get_side(side_id)
-	return over == "" and phase == "field" and s != null and not s.special.is_empty() and s.wave.is_empty() \
-			and s.pending.is_empty() and s.mp >= float(s.special.mp_cost)
+	if over != "" or phase != "field" or s == null or s.specials.is_empty() \
+			or not s.wave.is_empty() or not s.pending.is_empty():
+		return false
+	if slot < 0:
+		return largest_ready(side_id) >= 0
+	if slot >= s.specials.size():
+		return false
+	var sp: Dictionary = s.specials[slot]
+	if is_guard(sp) and not s.guard.is_empty():
+		return false
+	return s.mp >= float(sp.mp_cost)
+
+
+## Highest slot whose special can start now, -1 = none.
+func largest_ready(side_id: String) -> int:
+	var s := get_side(side_id)
+	if s == null:
+		return -1
+	for i in range(s.specials.size() - 1, -1, -1):
+		var sp: Dictionary = s.specials[i]
+		if s.mp >= float(sp.mp_cost) and not (is_guard(sp) and not s.guard.is_empty()):
+			return i if special_ready(side_id, i) else -1
+	return -1
+
+
+## A defence special (raises the caster's own guard instead of hitting anyone).
+static func is_guard(sp: Dictionary) -> bool:
+	return str(sp.get("type", "")) == "guard"
 
 
 ## Where a side's special would start, in the special's own coordinates
 ## (px from the caster's edge): in front of its general, or start_x.
-func launch_x(s: Army) -> float:
-	var sp := s.special
+## sp: the special (default: the side's current one).
+func launch_x(s: Army, sp: Dictionary = {}) -> float:
+	if sp.is_empty():
+		sp = s.special
 	var g := general_of(s.id)
 	if g != null and g.alive and sp.has("launch_offset"):
 		var lx := g.x if s.facing == 1 else float(_field.width) - g.x
 		return lx + float(sp.launch_offset)
-	return float(sp.start_x)
+	return float(sp.get("start_x", 0))
 
 
 ## Damage a special does to u when its front has travelled `travelled` px.
 ## Generals take damage_general when set (troops are many and small, generals
-## are one big unit, so the two are tuned apart), else damage.
-func special_damage(s: Army, u: Unit, travelled: float) -> float:
-	var sp := s.special
-	var dmg := float(sp.damage)
+## are one big unit, so the two are tuned apart), else damage. A guard on u's
+## side cuts it like a normal hit. sp: the special (default: the side's current one).
+func special_damage(s: Army, u: Unit, travelled: float, sp: Dictionary = {}) -> float:
+	if sp.is_empty():
+		sp = s.special
+	var dmg := float(sp.get("damage", 0))
 	if u.is_general and sp.has("damage_general"):
 		dmg = float(sp.damage_general)
 	var rng_px := float(sp.get("range", 0))
@@ -615,6 +689,8 @@ func special_damage(s: Army, u: Unit, travelled: float) -> float:
 		dmg *= lerpf(1.0, float(sp.get("min_damage_pct", 100)) / 100.0, k)
 	if _special_take:
 		dmg *= u.side.order_take * u.side.form_take
+	if not u.side.guard.is_empty():
+		dmg *= float(u.side.guard.take)
 	return dmg
 
 
@@ -679,6 +755,29 @@ func general_of(side_id: String) -> Unit:
 	if s == null or s.general_idx < 0:
 		return null
 	return units[s.general_idx]
+
+
+## The general of the side facing s, or null.
+func _enemy_general(s: Army) -> Unit:
+	for o in sides:
+		if o != s:
+			var g := general_of(o.id)
+			if g != null and g.alive:
+				return g
+	return null
+
+
+## A side's special slots: its general's "specials" list (small, medium,
+## large), else the side's single "special".
+func _specials_for(sd: Dictionary) -> Array:
+	var out: Array = []
+	var gdef: Dictionary = cfg.units.get(sd.get("general", ""), {})
+	for id in gdef.get("specials", []):
+		assert(cfg.specials.has(id), "BattleSim: unknown special '%s'" % id)
+		out.append(cfg.specials[id])
+	if out.is_empty() and cfg.specials.has(sd.get("special", "")):
+		out.append(cfg.specials[sd.special])
+	return out
 
 
 func get_side(side_id: String) -> Army:
@@ -748,6 +847,7 @@ func _offer_duel() -> void:
 		choices[s.id] = ""
 		s.pending = {}
 		s.wave = {}
+		s.guard = {}
 		s.split_lane = -1
 		s.gen_charge = false
 		s.gen_returning = false
@@ -1051,9 +1151,16 @@ func _step_pending(s: Army, dt: float) -> void:
 
 func _launch(s: Army) -> void:
 	var p := s.pending
-	var x0 := launch_x(s)
-	s.wave = {"x": x0, "x0": x0, "y0": float(p.y0), "y1": float(p.y1), "lane": p.lane, "hit": {}}
+	var sp := s.special
 	s.pending = {}
+	if is_guard(sp):
+		var dur := float(sp.get("duration", 5))
+		s.guard = {"take": float(sp.get("take_mult", 1)), "left": dur, "total": dur, "special": sp}
+		if record_events:
+			_events.append({"type": "guard", "side": s.id, "special": sp})
+		return
+	var x0 := launch_x(s)
+	s.wave = {"x": x0, "x0": x0, "y0": float(p.y0), "y1": float(p.y1), "lane": p.lane, "hit": {}, "power": 1.0}
 	if record_events:
 		_events.append({"type": "launch", "side": s.id, "x0": x0, "lane": p.lane})
 
@@ -1067,6 +1174,8 @@ func _step_wave(s: Army, dt: float, live: Array[Unit]) -> void:
 	var kb := float(sp.get("knockback", 0))
 	var y0 := float(w.y0)
 	var y1 := float(w.y1)
+	# A bolt at the general loses block_pct of its power per troop it passes.
+	var block := float(sp.get("block_pct", 0)) / 100.0
 	for u in live:
 		if u.side != s and u.alive and not w.hit.has(u.id):
 			if u.y < y0 or u.y > y1:
@@ -1075,7 +1184,11 @@ func _step_wave(s: Army, dt: float, live: Array[Unit]) -> void:
 			var lx := u.x if s.facing == 1 else width - u.x
 			if lx < w.x and lx > w.x - band:
 				w.hit[u.id] = true
-				var dmg := special_damage(s, u, lx - float(w.x0))
+				var dmg := special_damage(s, u, lx - float(w.x0)) * float(w.power)
+				if block > 0.0 and not u.is_general:
+					w.power = float(w.power) * (1.0 - block)
+				if dmg <= 0.0:
+					continue
 				u.hp -= dmg
 				u.fx = float(sp.hit_flash)
 				if record_events:

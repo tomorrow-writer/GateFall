@@ -8,7 +8,8 @@
 ##   Q / A / Z (or Up / Left / Down) = open the top / middle / bottom lane
 ##     (same key again closes it); clicking a lane on the field does the same
 ##   G = send the general in / call it back
-##   Space = special, Enter = start / again
+##   4 / 5 / 6 = the general's small / medium / large special,
+##   Space = the largest special ready now, Enter = start / again
 ##   Tab / right-click / click the order box = command menu: the battle pauses
 ##     while it is open (like DF's command window) and it closes on any command
 ## HUD (BattleHud.gd) in the DF layout: general HP at the top corners, clock in
@@ -19,7 +20,8 @@
 ## Specials have a warning time instead of a freeze: the target lane lights up
 ## and the battle keeps running, so there is time to open that lane (or pull
 ## back from a full-field wave). A lane special fired by the player runs down
-## the lane with the most enemies (BattleSim.cast picks it).
+## the lane with the most enemies (BattleSim.cast picks it); a bolt at the
+## general always goes down the enemy general's lane.
 extends Node2D
 
 const BattleSim = preload("res://scripts/battle/BattleSim.gd")
@@ -33,6 +35,9 @@ const BattleRng = preload("res://scripts/battle/BattleRng.gd")
 
 const ORDER_KEYS := {"charge": "1", "hold": "2", "retreat": "3"}
 const LANE_KEYS := ["Q", "A", "Z"]
+const SPECIAL_KEYS := ["4", "5", "6"]
+const TIER_LABELS := {"small": "เล็ก", "medium": "กลาง", "large": "ใหญ่"}
+const FOCUS_LABELS := {"troops": "ตีทหาร", "general": "ตีแม่ทัพ", "defense": "ป้องกัน"}
 
 @onready var view = $View
 @onready var hud = %DfHud
@@ -42,7 +47,7 @@ const LANE_KEYS := ["Q", "A", "Z"]
 @onready var retreat_btn: Button = %RetreatButton
 @onready var lane_box: Container = %LaneBox
 @onready var general_btn: Button = %GeneralButton
-@onready var special_btn: Button = %SpecialButton
+@onready var special_row: Container = %SpecialRow
 @onready var setup_panel: Control = %SetupPanel
 @onready var formation_list: Container = %FormationList
 @onready var formation_info: Label = %FormationInfo
@@ -70,6 +75,7 @@ var _enemy_side := ""
 var _formation_buttons := {}
 var _order_buttons := {}
 var _lane_buttons: Array[Button] = []
+var _special_buttons: Array[Button] = []
 ## Command menu open: the sim does not step (DF's pausing command window).
 var menu_open := false
 
@@ -116,7 +122,10 @@ func _ready() -> void:
 
 	general_btn.toggle_mode = true
 	general_btn.pressed.connect(_toggle_general)
-	special_btn.pressed.connect(_cast_special)
+	for i in special_row.get_child_count():
+		var b: Button = special_row.get_child(i)
+		b.pressed.connect(_cast_special.bind(i))
+		_special_buttons.append(b)
 	start_btn.pressed.connect(_start_fight)
 	again_btn.pressed.connect(_back_to_setup)
 	duel_btn.pressed.connect(_duel_choice.bind("duel"))
@@ -217,8 +226,14 @@ func _unhandled_input(event: InputEvent) -> void:
 			_split(2)
 		KEY_G:
 			_toggle_general()
+		KEY_4:
+			_cast_special(0)
+		KEY_5:
+			_cast_special(1)
+		KEY_6:
+			_cast_special(2)
 		KEY_SPACE:
-			_cast_special()
+			_cast_special(-1)
 		KEY_ENTER, KEY_KP_ENTER:
 			if phase == "setup":
 				_start_fight()
@@ -242,8 +257,8 @@ func _pick_formation(key: String) -> void:
 		return
 	formation = key
 	_formation_buttons[key].button_pressed = true
-	formation_info.text = _formation_text(cfg.formations[key])
 	_new_sim()
+	formation_info.text = _formation_text(cfg.formations[key]) + "\n" + _specials_text()
 
 
 ## Builds the battle now so the setup screen shows the real starting positions.
@@ -349,10 +364,11 @@ func _toggle_general() -> void:
 	_close_menu()
 
 
-func _cast_special() -> void:
+## slot 0 small, 1 medium, 2 large; -1 = the largest one ready.
+func _cast_special(slot: int) -> void:
 	if phase != "fight" or sim == null:
 		return
-	sim.cast(player_side)
+	sim.cast(player_side, -1, slot)
 	_close_menu()
 
 
@@ -377,16 +393,20 @@ func _update_hud() -> void:
 	if sim == null:
 		return
 	var s := sim.get_side(player_side)
-	var has_special := not s.special.is_empty()
 	hud.menu_open = menu_open
 	command_menu.visible = menu_open
 	if phase == "setup":
 		setup_panel.visible = not menu_open
-	special_btn.visible = has_special
-	if has_special:
-		var cost := float(s.special.mp_cost)
-		special_btn.text = "%s %d" % [s.special.get("label", "special"), int(cost)]
-		special_btn.disabled = phase != "fight" or not sim.special_ready(player_side)
+	special_row.visible = not s.specials.is_empty()
+	for i in _special_buttons.size():
+		var b := _special_buttons[i]
+		b.visible = i < s.specials.size()
+		if not b.visible:
+			continue
+		var sp: Dictionary = s.specials[i]
+		b.text = "%s %d" % [sp.get("label", "special"), int(sp.mp_cost)]
+		b.tooltip_text = "[%s] %s" % [SPECIAL_KEYS[i], _special_line(sp)]
+		b.disabled = phase != "fight" or not sim.special_ready(player_side, i)
 	if sim.phase == "offer" and not duel_btn.disabled:
 		duel_btn.text = "ดวล [Enter] %d" % ceili(maxf(0.0, float(sim.duel.offer_left)))
 	elif duel_btn.text != "ดวล [Enter]":
@@ -421,6 +441,33 @@ func _formation_text(f: Dictionary) -> String:
 	if f.has("flank"):
 		t += "   ·   รุม %d ตัวขึ้นไป ตี ×%s" % [int(f.get("flank_min", 2)), _num(f.flank)]
 	return t
+
+
+## The player general's three specials, for the setup screen (two lines:
+## the general's style, then the keys with name and MP).
+func _specials_text() -> String:
+	if sim == null:
+		return ""
+	var s := sim.get_side(player_side)
+	if s == null or s.specials.is_empty():
+		return ""
+	var g := sim.general_of(player_side)
+	var t := "ท่าพิเศษแม่ทัพ"
+	if g != null:
+		var label := str(cfg.units.get(g.type_id, {}).get("focus_label", ""))
+		if label != "":
+			t += " · " + label
+	var parts: PackedStringArray = []
+	for i in s.specials.size():
+		var sp: Dictionary = s.specials[i]
+		parts.append("[%s] %s %d" % [SPECIAL_KEYS[i] if i < SPECIAL_KEYS.size() else "", sp.get("label", ""), int(sp.mp_cost)])
+	return t + "\n" + "  ".join(parts)
+
+
+## "เล็ก · ตีแม่ทัพ · กระสุน... MP 20"
+func _special_line(sp: Dictionary) -> String:
+	return "%s · %s · %s MP %d" % [TIER_LABELS.get(str(sp.get("tier", "")), "-"),
+			FOCUS_LABELS.get(str(sp.get("focus", "")), "-"), sp.get("label", ""), int(sp.get("mp_cost", 0))]
 
 
 func _num(v) -> String:

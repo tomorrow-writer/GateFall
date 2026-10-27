@@ -15,6 +15,13 @@
 ##   best lane (or the whole field) and cast if it holds min_share of the value
 ##   of hitting every enemy; full MP lowers that to full_mp_min_share; own
 ##   general hurt with enemies on it: any hit, those enemies count danger_weight x.
+##   With three specials (small / medium / large) every one gets that value;
+##   a defence special (guard) is worth the HP it would save: damage our units
+##   are taking now (enemies in reach, guard_persist share of its duration)
+##   plus enemy specials on their way, x (1 - take_mult); it goes when that is
+##   >= guard_min_value. Of the ones worth casting it picks the best value per
+##   MP, but saves up (casts nothing) while a dearer one would be worth more
+##   than save_ratio x per MP; full MP or a general in danger stop the saving.
 ##
 ## Dodging (checked every step): reaction_time s after an enemy cast starts,
 ##   with chance dodge_skill: a lane special holding dodge_min_units of our
@@ -54,6 +61,9 @@ const DEFAULTS := {
 	"charge_max_enemy_troops": 3,
 	"return_adv": 0.7,
 	"duel_retreat_ratio": 1.5,
+	"save_ratio": 0.8,
+	"guard_min_value": 2.0,
+	"guard_persist": 0.6,
 }
 
 var side_id: String
@@ -70,6 +80,7 @@ var _seen := {}  # enemy side id -> casts already noticed
 var _react := {}  # enemy side id -> sim time to react at
 var _restore_order := ""  # order to go back to after a full-field special
 var _restore_watch := ""  # enemy side whose special we are waiting out
+var _save_slot := -1  # dearer special we are saving MP for, -1 = none
 
 
 ## opts: {"cast": bool, "dodge": bool, "gcharge": bool, "seed": int}
@@ -116,40 +127,147 @@ func think(sim, dt: float) -> void:
 func _think_cast(sim, s) -> void:
 	if not sim.special_ready(side_id):
 		return
-	if sim.time <= float(s.special.get("auto_cast_after", 0)):
-		return
 	var guard = _general_in_danger(sim, s)
-	var plan := best_lane(sim, s, tuning, guard)
+	var full: bool = s.mp >= s.mp_max - 0.001
+	var threat := _enemy_special_coming(sim, s)
+	var best := {}
+	var best_eff := -1.0
+	var top_eff := 0.0  # best value per MP among the ones worth casting, affordable or not
+	var top_slot := -1
+	var save_ok := false  # the special we were saving for is still worth it
+	for slot in s.specials.size():
+		var sp: Dictionary = s.specials[slot]
+		if sim.time <= float(sp.get("auto_cast_after", 0)):
+			continue
+		var plan := plan_special(sim, s, sp, tuning, guard)
+		var reason := _worth(plan, sp, guard != null, full)
+		if reason == "":
+			continue
+		var eff: float = plan.value / maxf(1.0, float(sp.mp_cost))
+		if slot == _save_slot:
+			save_ok = true
+		if eff > top_eff:
+			top_eff = eff
+			top_slot = slot
+		# A guard against an enemy special already on its way never waits.
+		if _is_guard(sp) and threat:
+			eff *= 100.0
+		if sim.special_ready(side_id, slot) and eff > best_eff:
+			best_eff = eff
+			best = plan
+			best.slot = slot
+			best.reason = reason
+	if not save_ok:
+		_save_slot = -1
+	if best.is_empty():
+		return
+	# Save MP for a dearer special that would be worth clearly more per MP;
+	# once saving for one, stick to it (positions shift every think) unless
+	# MP is full, the general is in danger or a guard is needed now.
+	var guard_now: bool = threat and _is_guard(s.specials[best.slot])
+	var urgent: bool = guard != null or full or guard_now
+	if not urgent:
+		if _save_slot >= 0 and best.slot != _save_slot:
+			return
+		if best_eff < top_eff * float(tuning.save_ratio):
+			_save_slot = top_slot
+			return
+	_save_slot = -1
+	last_reason = best.reason
+	sim.cast(side_id, best.lane, best.slot)
+
+
+## True if an enemy special (not a guard) is warming up or running.
+func _enemy_special_coming(sim, s) -> bool:
+	for o in sim.sides:
+		if o != s and (not o.pending.is_empty() or not o.wave.is_empty()) and not _is_guard(o.special):
+			return true
+	return false
+
+
+## Why a plan is worth casting ("value", "full_mp", "danger", "guard"), "" = not.
+func _worth(plan: Dictionary, sp: Dictionary, danger: bool, full: bool) -> String:
 	if plan.value <= 0.0:
-		return
+		return ""
+	if _is_guard(sp):
+		return "guard" if plan.value >= float(tuning.guard_min_value) else ""
+	if danger:
+		return "danger"
 	var share: float = plan.value / maxf(plan.total, 0.001)
-	if guard != null:
-		last_reason = "danger"
-	elif share >= float(tuning.min_share):
-		last_reason = "value"
-	elif s.mp >= s.mp_max - 0.001 and share >= float(tuning.full_mp_min_share):
-		last_reason = "full_mp"
-	else:
-		return
-	sim.cast(side_id, plan.lane)
+	if share >= float(tuning.min_share):
+		return "value"
+	if full and share >= float(tuning.full_mp_min_share):
+		return "full_mp"
+	return ""
+
+
+## Value of one special for a side right now: best_lane for attacks,
+## guard_value for a defence special. Same keys as best_lane.
+static func plan_special(sim, s, sp: Dictionary, t: Dictionary = DEFAULTS, guard = null) -> Dictionary:
+	if _is_guard(sp):
+		var v := guard_value(sim, s, sp, t)
+		return {"lane": -1, "value": v, "total": v}
+	return best_lane(sim, s, t, guard, sp)
+
+
+## HP a guard would save (in hit-value units: share of max HP, general x
+## general_weight): what our units in a fight are taking now over guard_persist
+## of its duration, plus enemy specials warming up or running, x (1 - take_mult).
+static func guard_value(sim, s, sp: Dictionary, t: Dictionary = DEFAULTS) -> float:
+	var gw := float(t.get("general_weight", DEFAULTS.general_weight))
+	var cut := 1.0 - float(sp.get("take_mult", 1))
+	var secs := float(sp.get("duration", 5)) * float(t.get("guard_persist", DEFAULTS.guard_persist))
+	var incoming := {}  # unit id -> HP expected to be lost
+	for e in sim.units:
+		if not e.alive or e.side == s or e.tg == null or not e.tg.alive or e.tg.side != s:
+			continue
+		if BattleMath.hypot(e.x - e.tg.x, e.y - e.tg.y) > e.reach + 4.0:
+			continue
+		var dps: float = e.atk / maxf(0.1, e.cd) * e.side.order_atk * e.side.form_atk \
+				* s.order_take * s.form_take
+		incoming[e.tg.id] = incoming.get(e.tg.id, 0.0) + dps * secs
+	var width := float(sim.cfg.field.width)
+	for o in sim.sides:
+		if o == s or (o.pending.is_empty() and o.wave.is_empty()):
+			continue
+		var w: Dictionary = o.pending if not o.pending.is_empty() else o.wave
+		var x0: float = sim.launch_x(o)
+		for u in sim.units:
+			if u.alive and u.side == s and u.y >= float(w.y0) and u.y <= float(w.y1):
+				var lx: float = u.x if o.facing == 1 else width - u.x
+				if str(o.special.get("targets", "all")) == "general" and not u.is_general:
+					continue
+				incoming[u.id] = incoming.get(u.id, 0.0) + sim.special_damage(o, u, maxf(0.0, lx - x0))
+	var v := 0.0
+	for u in sim.units:
+		if u.alive and u.side == s and incoming.has(u.id):
+			var saved: float = minf(float(incoming[u.id]), u.hp) * cut / u.max_hp
+			v += saved * (gw if u.is_general else 1.0)
+	return v
 
 
 ## Where a side's special would do the most good right now.
 ## Returns {"lane": lane index (-1 = whole field), "value": value of that lane,
 ## "total": value of hitting every enemy}. guard: own general to protect
-## (enemies near it count extra), or null.
-static func best_lane(sim, s, t: Dictionary = DEFAULTS, guard = null) -> Dictionary:
-	var sp: Dictionary = s.special
+## (enemies near it count extra), or null. sp: the special (default: the
+## side's current one). A bolt at the general (targets: general) is worth only
+## its hit on the general, after the troops in its lane soak their share.
+static func best_lane(sim, s, t: Dictionary = DEFAULTS, guard = null, sp: Dictionary = {}) -> Dictionary:
+	if sp.is_empty():
+		sp = s.special
 	var gw := float(t.get("general_weight", DEFAULTS.general_weight))
 	var kb := float(t.get("kill_bonus", DEFAULTS.kill_bonus))
 	var dw := float(t.get("danger_weight", DEFAULTS.danger_weight))
 	var dr := float(t.get("danger_range", DEFAULTS.danger_range))
 	var width := float(sim.cfg.field.width)
-	var x0: float = sim.launch_x(s)
+	var x0: float = sim.launch_x(s, sp)
 	var band := float(sp.get("width", 0))
 	var reach := float(sp.get("range", 0))
 	if reach <= 0.0:
 		reach = float(sp.get("end_x", width)) - x0
+
+	if str(sp.get("targets", "all")) == "general":
+		return _bolt_value(sim, s, sp, x0, reach, gw, kb)
 
 	# Positions now; the special arrives a couple of seconds later, so the
 	# lane is a little stale by then (and the enemy may dodge).
@@ -161,7 +279,7 @@ static func best_lane(sim, s, t: Dictionary = DEFAULTS, guard = null) -> Diction
 		var lx: float = u.x if s.facing == 1 else width - u.x
 		if lx < x0 - band or lx > x0 + reach:
 			continue
-		var dmg: float = sim.special_damage(s, u, maxf(0.0, lx - x0))
+		var dmg: float = sim.special_damage(s, u, maxf(0.0, lx - x0), sp)
 		var v: float = minf(dmg, u.hp) / u.max_hp
 		if dmg >= u.hp:
 			v += kb
@@ -190,6 +308,40 @@ static func best_lane(sim, s, t: Dictionary = DEFAULTS, guard = null) -> Diction
 			best_v = v
 			best = i
 	return {"lane": best, "value": maxf(0.0, best_v), "total": total}
+
+
+## Bolt at the enemy general: down the general's lane, block_pct of its power
+## lost per enemy troop between the launch point and the general.
+static func _bolt_value(sim, s, sp: Dictionary, x0: float, reach: float, gw: float, kb: float) -> Dictionary:
+	var g = null
+	for o in sim.sides:
+		if o != s:
+			g = sim.general_of(o.id)
+	if g == null or not g.alive:
+		return {"lane": -1, "value": 0.0, "total": 0.0}
+	var width := float(sim.cfg.field.width)
+	var gx: float = g.x if s.facing == 1 else width - g.x
+	if gx < x0 or gx > x0 + reach:
+		return {"lane": -1, "value": 0.0, "total": 0.0}
+	var lane: int = sim.lane_of(g.y)
+	var b: Vector2 = sim.lane_bounds(lane) if lane >= 0 else Vector2(-INF, INF)
+	var block := float(sp.get("block_pct", 0)) / 100.0
+	var power := 1.0
+	for u in sim.units:
+		if u.alive and u.side == g.side and not u.is_general and u.y >= b.x and u.y <= b.y:
+			var lx: float = u.x if s.facing == 1 else width - u.x
+			if lx > x0 and lx < gx:
+				power *= 1.0 - block
+	var dmg: float = sim.special_damage(s, g, gx - x0, sp) * power
+	var v: float = minf(dmg, g.hp) / g.max_hp
+	if dmg >= g.hp:
+		v += kb
+	v *= gw
+	return {"lane": lane, "value": v, "total": v}
+
+
+static func _is_guard(sp: Dictionary) -> bool:
+	return str(sp.get("type", "")) == "guard"
 
 
 ## Own general if it is hurt and an enemy is close to it, else null.
@@ -229,7 +381,11 @@ func _react_to(sim, s, e) -> void:
 		return
 	if _rng.randf() > float(tuning.dodge_skill):
 		return
+	if _is_guard(e.special):
+		return
 	var lane := int(info.get("lane", -1))
+	if str(e.special.get("targets", "all")) == "general":
+		return  # opening the lane would only take the general's shield away
 	if lane >= 0:
 		var y0 := float(info.y0)
 		var y1 := float(info.y1)

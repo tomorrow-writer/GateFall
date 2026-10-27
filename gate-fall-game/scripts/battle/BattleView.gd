@@ -183,6 +183,20 @@ func handle_events(events: Array) -> void:
 						_flash_col = Color(1, 1, 1)
 
 
+## Guard (defence special) up: a pulsing shield ring at the feet of every unit
+## on that side, fading out in its last second.
+func _draw_guard(s) -> void:
+	var col := Color(str(s.guard.special.get("color", "8cc8ff")))
+	var a := (0.45 + 0.2 * sin(_clock * 6.0)) * clampf(float(s.guard.left), 0.0, 1.0)
+	for u in sim.units:
+		if not u.alive or u.side != s:
+			continue
+		var r: float = u.radius + 3.0
+		draw_set_transform(Vector2(u.x, u.y), 0.0, Vector2(1.0, 0.45))
+		draw_arc(Vector2.ZERO, r, 0, TAU, 16, Color(col, a), 1.5)
+		draw_set_transform(Vector2.ZERO)
+
+
 ## Special's "color" from the config, light green if unset.
 func _special_color(s) -> Color:
 	if s == null or s.special.is_empty():
@@ -259,8 +273,10 @@ func _draw() -> void:
 		return
 	_draw_lanes()
 	for s in sim.sides:
-		if not s.pending.is_empty():
+		if not s.pending.is_empty() and not BattleSim.is_guard(s.special):
 			_draw_warning(s)
+		if not s.guard.is_empty():
+			_draw_guard(s)
 	# Wave behind the units (a cavalry charge rides over them, drawn below)
 	for s in sim.sides:
 		if not s.wave.is_empty() and s.special.get("type", "wave") != "charge":
@@ -366,6 +382,9 @@ func _draw_wave(s) -> void:
 	if sp.get("type", "wave") == "charge":
 		_draw_charge(s, x0, x1, col)
 		return
+	if sp.get("type", "wave") == "bolt":
+		_draw_bolt(s, x1 if s.facing == 1 else x0, col)
+		return
 	# fades as it runs out of range (weaker damage)
 	var fade := 1.0
 	if float(sp.get("range", 0)) > 0.0:
@@ -402,6 +421,23 @@ func _draw_wave_sprites(s, id: String, x0: float, x1: float, top: float, bot: fl
 			continue  # lane outside the wave (single-lane specials)
 		var px := front - f * float(WAVE_STAGGER[i % WAVE_STAGGER.size()])
 		_draw_fx_sprite(id, _clock + i * 0.11, Vector2(px, b.y), f, Color(1, 1, 1, 0.92 * fade))
+
+
+## Bolt at the enemy general (placeholder): a javelin flying down the lane at
+## the general's height with a streak behind it, dimmer as troops soak its power.
+func _draw_bolt(s, front: float, col: Color) -> void:
+	var w: Dictionary = s.wave
+	var f := float(s.facing)
+	var y := (float(w.y0) + float(w.y1)) / 2.0
+	var eg = sim.general_of(_other_side(s.id))
+	if eg != null and eg.alive and eg.y >= float(w.y0) and eg.y <= float(w.y1):
+		y = eg.y
+	y -= 14.0  # chest height
+	var power := clampf(float(w.get("power", 1.0)), 0.25, 1.0)
+	draw_line(Vector2(front - f * 60.0, y), Vector2(front - f * 14.0, y), Color(col, 0.25 * power), 3.0)
+	draw_line(Vector2(front - f * 16.0, y), Vector2(front, y), Color(col.lightened(0.3), power), 1.5)
+	draw_colored_polygon(PackedVector2Array([Vector2(front + f * 4.0, y), Vector2(front - f * 2.0, y - 3.0),
+			Vector2(front - f * 2.0, y + 3.0)]), Color(Color.WHITE, power))
 
 
 ## Cavalry charge: a row of placeholder horsemen galloping down the lane,
@@ -708,7 +744,9 @@ func _draw_banners() -> void:
 		var lane_name := ""
 		var lane := int(s.pending.lane)
 		var labels: Array = sim.cfg.get("lanes", {}).get("labels", [])
-		if lane >= 0 and lane < labels.size():
+		if BattleSim.is_guard(s.special):
+			lane_name = " · ทั้งทัพ"
+		elif lane >= 0 and lane < labels.size():
 			lane_name = " · เลน" + str(labels[lane])
 		elif lane < 0:
 			lane_name = " · ทั้งสนาม"
@@ -753,6 +791,7 @@ const CUTIN_OUT := 0.16
 const CUTIN_TIME := CUTIN_IN + CUTIN_HOLD + CUTIN_OUT
 const CUTIN_SCALE := 2.0
 const CUTIN_GOLD := Color("e8c070")
+const TIER_NAMES := {"small": "เล็ก", "medium": "กลาง", "large": "ใหญ่"}
 
 
 ## Seconds since side s started its special (INF = no cut-in running).
@@ -825,7 +864,8 @@ func _draw_cutin() -> void:
 	if h < 30.0:
 		return
 	var font := ThemeDB.fallback_font
-	var small := "! ศัตรูใช้ท่าพิเศษ" if enemy else "ท่าพิเศษของแม่ทัพ"
+	var tier := str(TIER_NAMES.get(str(s.special.get("tier", "")), ""))
+	var small := ("! ศัตรูใช้ท่าพิเศษ" if enemy else "ท่าพิเศษของแม่ทัพ") + ((" · ท่า" + tier) if tier != "" else "")
 	var title := str(s.special.get("label", ""))
 	var big := 16
 	var tw := font.get_string_size(title, HORIZONTAL_ALIGNMENT_LEFT, -1, big).x

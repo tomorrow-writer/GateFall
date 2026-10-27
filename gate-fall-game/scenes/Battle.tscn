@@ -149,18 +149,35 @@ theme_override_font_sizes/font_size = 8
 toggle_mode = true
 text = "แม่ทัพลงสนาม [G]"
 
-[node name="SpecialButton" type="Button" parent="Hud/Root/CommandMenu/VBox/GeneralRow"]
+[node name="SpecialRow" type="HBoxContainer" parent="Hud/Root/CommandMenu/VBox"]
 unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 2
+alignment = 1
+
+[node name="SpecialSmall" type="Button" parent="Hud/Root/CommandMenu/VBox/SpecialRow"]
 layout_mode = 2
 focus_mode = 0
 theme_override_font_sizes/font_size = 8
-text = "ท่าพิเศษ [Space]"
+text = "ท่า [4]"
+
+[node name="SpecialMedium" type="Button" parent="Hud/Root/CommandMenu/VBox/SpecialRow"]
+layout_mode = 2
+focus_mode = 0
+theme_override_font_sizes/font_size = 8
+text = "ท่า [5]"
+
+[node name="SpecialLarge" type="Button" parent="Hud/Root/CommandMenu/VBox/SpecialRow"]
+layout_mode = 2
+focus_mode = 0
+theme_override_font_sizes/font_size = 8
+text = "ท่า [6]"
 
 [node name="Hint" type="Label" parent="Hud/Root/CommandMenu/VBox"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.75, 0.73, 0.68, 1)
 theme_override_font_sizes/font_size = 7
-text = "Tab / คลิกขวา = ปิด · ปุ่มลัดใช้ได้ตลอด"
+text = "ท่าพิเศษ 4 เล็ก · 5 กลาง · 6 ใหญ่ · Space = ใหญ่สุดที่ใช้ได้\nTab / คลิกขวา = ปิด · ปุ่มลัดใช้ได้ตลอด"
 horizontal_alignment = 1
 
 [node name="SetupPanel" type="PanelContainer" parent="Hud/Root"]
