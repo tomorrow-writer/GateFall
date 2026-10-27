@@ -90,7 +90,8 @@ func _ready() -> void:
 			b.hide()
 			continue
 		b.button_group = order_group
-		b.text = "%s [%s]" % [cfg.orders[name].get("label", name), ORDER_KEYS[name]]
+		b.text = cfg.orders[name].get("label", name)
+		b.tooltip_text = "[%s]" % ORDER_KEYS[name]
 		b.pressed.connect(_set_order.bind(name))
 
 	# Lane buttons: one per lane, top to bottom
@@ -99,11 +100,11 @@ func _ready() -> void:
 	for i in lanes:
 		var b := Button.new()
 		var key: String = LANE_KEYS[i] if i < LANE_KEYS.size() else ""
-		b.text = "%s[%s]" % [labels[i] if i < labels.size() else str(i + 1), key]
+		b.text = labels[i] if i < labels.size() else str(i + 1)
 		b.toggle_mode = true
 		b.focus_mode = Control.FOCUS_NONE
-		b.add_theme_font_size_override("font_size", 9)
-		b.tooltip_text = "แยกเลน: เปิดเลน%s ให้ท่าพิเศษผ่าน" % (labels[i] if i < labels.size() else "")
+		b.add_theme_font_size_override("font_size", 8)
+		b.tooltip_text = "แยกเลน [%s]: เปิดเลน%s ให้ท่าพิเศษผ่าน" % [key, labels[i] if i < labels.size() else ""]
 		b.pressed.connect(_split.bind(i))
 		lane_box.add_child(b)
 		_lane_buttons.append(b)
@@ -124,6 +125,7 @@ func _ready() -> void:
 		b.toggle_mode = true
 		b.button_group = form_group
 		b.focus_mode = Control.FOCUS_NONE
+		b.add_theme_font_size_override("font_size", 8)
 		b.pressed.connect(_pick_formation.bind(key))
 		formation_list.add_child(b)
 		_formation_buttons[key] = b
@@ -160,7 +162,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		# Click a lane on the field to open it.
 		if phase == "fight" and sim != null and sim.lane_count() > 0:
-			var p := get_global_mouse_position()
+			var p: Vector2 = view.get_local_mouse_position()  # field coords (camera applied)
 			var f: Dictionary = cfg.field
 			if p.y >= float(f.y_min) - 20.0 and p.y <= float(f.y_max) + 4.0:
 				_split(sim.lane_of(p.y))
@@ -342,7 +344,7 @@ func _update_hud() -> void:
 	special_btn.visible = has_special
 	if has_special:
 		var cost := float(s.special.mp_cost)
-		special_btn.text = "%s (%d) [Space]" % [s.special.get("label", "special"), int(cost)]
+		special_btn.text = "%s %d" % [s.special.get("label", "special"), int(cost)]
 		special_btn.disabled = phase != "fight" or not sim.special_ready(player_side)
 	if sim.phase == "offer" and not duel_btn.disabled:
 		duel_btn.text = "ดวล [Enter] %d" % ceili(maxf(0.0, float(sim.duel.offer_left)))
@@ -364,7 +366,7 @@ func _update_hud() -> void:
 	general_btn.disabled = not field or g == null or not g.alive
 	general_btn.set_pressed_no_signal(s.gen_charge)
 	var gc: Dictionary = cfg.get("general_charge", {})
-	general_btn.text = ("กลับหลังแนว [G]" if s.gen_charge else "%s [G]" % gc.get("label", "แม่ทัพลงสนาม"))
+	general_btn.text = ("กลับ" if s.gen_charge else str(gc.get("short_label", "ลงสนาม")))
 
 
 func _side_label(id: String) -> String:
