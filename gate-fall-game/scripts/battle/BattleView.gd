@@ -47,6 +47,7 @@ var _duel_t0 := -1.0  # view clock when the duel started
 var _duel_nums: Array = []  # {side (target), text, t0, col}
 var _bg: Texture2D = null  # field.background from the config (null = drawn placeholder)
 var _bg_path := ""
+var _facing := {}  # unit id -> -1/+1, which way it is drawn facing (see _update_facing)
 var _duel_bg: Texture2D = null  # field.duel_background (null = drawn placeholder)
 var _duel_bg_path := ""
 
@@ -56,6 +57,7 @@ func bind(s: BattleSim) -> void:
 	_load_sprites()
 	_load_fx_sprites()
 	_prev.clear()
+	_facing.clear()
 	_died_at.clear()
 	_born_at.clear()
 	_fx.clear()
@@ -70,7 +72,35 @@ func capture_prev() -> void:
 	if sim == null:
 		return
 	for u in sim.units:
+		_update_facing(u)
 		_prev[u.id] = Vector2(u.x, u.y)
+
+
+## Units turn to face what they fight: a target within reach (so a mob behind
+## a general hits its back and the general turns round to cut them down),
+## else the way they walked last step, else their target. Small moves don't
+## flip them, so nobody jitters.
+func _update_facing(u) -> void:
+	var f: float = _facing.get(u.id, float(u.side.facing))
+	if u.alive and sim.phase == "field":
+		var t = u.tg
+		var tdx: float = t.x - u.x if t != null and t.alive else 0.0
+		var near: bool = t != null and t.alive and Vector2(tdx, t.y - u.y).length() <= u.reach + 4.0
+		var mdx: float = u.x - _prev[u.id].x if _prev.has(u.id) else 0.0
+		if near and absf(tdx) > 2.0:
+			f = signf(tdx)
+		elif u.walking and absf(mdx) > 0.5:
+			f = signf(mdx)
+		elif not u.walking and absf(tdx) > 2.0:
+			f = signf(tdx)
+	_facing[u.id] = f
+
+
+## Which way to draw a unit: per unit on the field, the side's way in the duel.
+func _face(u) -> float:
+	if sim.phase != "field":
+		return float(u.side.facing)
+	return _facing.get(u.id, float(u.side.facing))
 
 
 func handle_events(events: Array) -> void:
@@ -375,7 +405,7 @@ func _draw_slime(u, p: Vector2, fade: float, flash: bool) -> void:
 	draw_circle(Vector2.ZERO, r, Color(col, fade))
 	draw_set_transform(Vector2.ZERO)
 	# eyes face the enemy
-	var f: float = float(u.side.facing)
+	var f: float = _face(u)
 	draw_rect(Rect2(c + Vector2(f * r * 0.25 - 1, -2), Vector2(1.5, 2)), Color(0, 0, 0, fade))
 	draw_rect(Rect2(c + Vector2(f * r * 0.6 - 1, -2), Vector2(1.5, 2)), Color(0, 0, 0, fade))
 	# spear
@@ -385,7 +415,7 @@ func _draw_slime(u, p: Vector2, fade: float, flash: bool) -> void:
 
 
 func _draw_knight(u, p: Vector2, fade: float, flash: bool) -> void:
-	var f: float = float(u.side.facing)
+	var f: float = _face(u)
 	var bob := absf(sin(u.anim * 8.0)) * 1.5 if u.walking else 0.0
 	var body := KNIGHT if not flash else FLASH
 	var base := p + Vector2(0, -bob)
@@ -425,7 +455,7 @@ func _draw_general_marks(u, b: Vector2) -> void:
 
 
 func _draw_general(u, p: Vector2, fade: float, flash: bool) -> void:
-	var f: float = float(u.side.facing)
+	var f: float = _face(u)
 	var bob := absf(sin(u.anim * 6.0)) * 1.5 if u.walking else 0.0
 	var b := p + Vector2(0, -bob)
 	var slime: bool = u.type_id.contains("slime")
@@ -813,7 +843,7 @@ func _draw_sprite(u, p: Vector2, fade: float, flash: bool, scale: float) -> bool
 	i = i % int(a.frames) if a.loop else mini(i, int(a.frames) - 1)
 	var w: float = sp.w
 	var h: float = sp.h
-	var f := float(u.side.facing)
+	var f := _face(u)
 	var foot: Vector2 = sp.foot
 	# born pop-in for split slimes
 	var born: float = _clock - _born_at.get(u.id, -10.0)
