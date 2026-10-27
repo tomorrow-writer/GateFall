@@ -29,7 +29,7 @@
 ##   charge_adv x theirs and at most charge_max_enemy_troops of theirs are left;
 ##   call it back when troops fall below return_adv x. A hurt general is never
 ##   called back (it stands and takes the hits), and a recalled one only walks
-##   back once nobody is fighting it (BattleSim._attacker_of).
+##   back once nobody is fighting it (BattleSim._foe_in_reach).
 ## Tuning lives in battle_config.json "ai"; DEFAULTS below fill any gap.
 extends RefCounted
 
