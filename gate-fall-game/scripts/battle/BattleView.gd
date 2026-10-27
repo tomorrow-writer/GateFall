@@ -35,6 +35,10 @@ var alpha := 1.0
 var _prev := {}  # unit id -> Vector2 position at the previous step
 var _died_at := {}  # unit id -> view clock when it died
 var _born_at := {}  # unit id -> view clock when it split off
+var _hurt_at := {}  # unit id -> view clock when it was last hit (troop HP bars show briefly)
+## Troop HP bars only show for this long after a hit: with armies of 30 a bar
+## over every soldier is noise (DF shows none); a short one marks who is hurt.
+const HURT_BAR_TIME := 1.2
 var _fx: Array = []  # {kind, pos, t0, dur}
 var _clock := 0.0
 var _flash := 0.0  # full-screen flash when a special is cast
@@ -51,6 +55,25 @@ var _facing := {}  # unit id -> -1/+1, which way it is drawn facing (see _update
 var _duel_bg: Texture2D = null  # field.duel_background (null = drawn placeholder)
 var _duel_bg_path := ""
 
+# --- camera (DF style) -----------------------------------------------------------
+# The screen (320x180) is smaller than the field (480 wide, ground y 104-240), so
+# the view is a window onto the field, like Dragon Force: close enough that the
+# troops read big, the ground fills the screen, and the camera follows the clash.
+# The camera only moves this node (whole pixels, no scaling), so sprites stay
+# crisp and the sim never knows. Things drawn in screen space (HP bars, banners,
+# radar, flashes) go through _screen_begin()/_screen_end().
+const SCREEN := Vector2(320, 180)
+## World y at the top of the screen: horizon (y 104) sits under the top HUD,
+## the dark strip under the field (y 240+) under the bottom HUD.
+const CAM_Y := 76.0
+## How fast the camera catches up (1/s); higher = snappier.
+const CAM_FOLLOW := 2.5
+## Radar: small map of the whole field, bottom-left above the command bar.
+const RADAR := Rect2(4, 128, 72, 20)
+## World position of the screen's top-left corner.
+var cam := Vector2(0, CAM_Y)
+var _cam_ready := false  # false = jump straight to the goal (new battle)
+
 
 func bind(s: BattleSim) -> void:
 	sim = s
@@ -60,10 +83,13 @@ func bind(s: BattleSim) -> void:
 	_facing.clear()
 	_died_at.clear()
 	_born_at.clear()
+	_hurt_at.clear()
 	_fx.clear()
 	_duel_t0 = -1.0
 	_duel_nums.clear()
+	_cam_ready = false
 	capture_prev()
+	_update_camera(0.0)
 	queue_redraw()
 
 
@@ -107,8 +133,10 @@ func handle_events(events: Array) -> void:
 	for e in events:
 		match e.type:
 			"hit":
+				_hurt_at[e.id] = _clock
 				_fx.append({"kind": "spark", "pos": Vector2(e.x, e.y - 8), "t0": _clock, "dur": 0.2})
 			"wavehit":
+				_hurt_at[e.id] = _clock
 				var by = sim.get_side(e.get("by", ""))
 				var hit_id := _special_fx(by, "hit")
 				if hit_id != "":
@@ -169,17 +197,64 @@ func _process(delta: float) -> void:
 		if _clock - f.t0 < f.dur:
 			keep.append(f)
 	_fx = keep
+	_update_camera(delta)
 	queue_redraw()
 
 
-func _draw() -> void:
-	_draw_field()
+## Where the camera wants to be: the middle of the clash (mean x of all troops
+## still standing), or of the player's army before the battle starts; generals
+## only when no troops are left. Clamped so the screen never leaves the field.
+func _camera_goal() -> float:
+	var sum := 0.0
+	var n := 0
+	var setup: bool = sim.time <= 0.0
+	for pass_generals in [false, true]:
+		for u in sim.units:
+			if not u.alive or u.is_general != pass_generals:
+				continue
+			if setup and u.side.id != player_side:
+				continue
+			sum += _pos(u).x
+			n += 1
+		if n > 0:
+			break
+	var cx := sum / float(n) if n > 0 else float(sim.cfg.field.width) / 2.0
+	return clampf(cx - SCREEN.x / 2.0, 0.0, float(sim.cfg.field.width) - SCREEN.x)
+
+
+func _update_camera(delta: float) -> void:
 	if sim == null:
 		return
 	if sim.phase == "duel":
+		position = Vector2.ZERO  # the duel close-up is drawn in screen space
+		return
+	var goal := _camera_goal()
+	if not _cam_ready:
+		cam.x = goal
+		_cam_ready = true
+	else:
+		cam.x = lerpf(cam.x, goal, 1.0 - exp(-CAM_FOLLOW * delta))
+	cam.y = CAM_Y
+	position = -cam.round()
+
+
+## Draw in screen pixels (0..SCREEN) while the node is offset by the camera.
+func _screen_begin() -> void:
+	draw_set_transform(cam.round())
+
+
+func _screen_end() -> void:
+	draw_set_transform(Vector2.ZERO)
+
+
+func _draw() -> void:
+	if sim != null and sim.phase == "duel":
 		_draw_duel()
 		if _flash > 0.0:
-			draw_rect(Rect2(0, 0, 480, 270), Color(_flash_col, _flash * 1.5))
+			draw_rect(Rect2(Vector2.ZERO, SCREEN), Color(_flash_col, _flash * 1.5))
+		return
+	_draw_field()
+	if sim == null:
 		return
 	_draw_lanes()
 	for s in sim.sides:
@@ -202,12 +277,44 @@ func _draw() -> void:
 			_draw_wave(s)
 	for f in _fx:
 		_draw_fx(f)
-	_draw_general_bars()
+	_screen_begin()
+	_draw_lane_timer()
 	_draw_banners()
+	_draw_radar()
 	if sim.phase == "offer":
-		draw_rect(Rect2(0, 0, 480, 270), Color(0, 0, 0, 0.45))
+		draw_rect(Rect2(Vector2.ZERO, SCREEN), Color(0, 0, 0, 0.45))
 	if _flash > 0.0:
-		draw_rect(Rect2(0, 0, 480, 270), Color(_flash_col.lerp(Color.WHITE, 0.4), _flash * 1.2))
+		draw_rect(Rect2(Vector2.ZERO, SCREEN), Color(_flash_col.lerp(Color.WHITE, 0.4), _flash * 1.2))
+	_screen_end()
+
+
+## Radar (screen space): the whole field shrunk into a small box, a dot per
+## unit in its side's colour (generals bigger), and a frame for what the screen
+## shows. Lets the player keep track of generals that are off screen.
+func _draw_radar() -> void:
+	if sim.time <= 0.0:
+		return
+	var f: Dictionary = sim.cfg.field
+	var w := float(f.width)
+	var y0 := float(f.y_min)
+	var y1 := float(f.y_max)
+	draw_rect(RADAR.grow(1), Color(0.85, 0.7, 0.35, 0.9), false, 1.0)
+	draw_rect(RADAR, Color(0.02, 0.03, 0.08, 0.75))
+	var to_radar := func(p: Vector2) -> Vector2:
+		return RADAR.position + Vector2(p.x / w * RADAR.size.x,
+				clampf((p.y - y0) / maxf(1.0, y1 - y0), 0.0, 1.0) * (RADAR.size.y - 1.0))
+	for u in sim.units:
+		if not u.alive:
+			continue
+		var mine: bool = u.side.id == player_side
+		var col := Color("6ad0ff") if mine else Color("ff5a4a")
+		var p: Vector2 = to_radar.call(_pos(u))
+		if u.is_general:
+			draw_rect(Rect2(p - Vector2(1, 1), Vector2(3, 3)), col.lightened(0.4))
+		else:
+			draw_rect(Rect2(p, Vector2(1, 1)), col)
+	var vx := RADAR.position.x + cam.x / w * RADAR.size.x
+	draw_rect(Rect2(vx, RADAR.position.y, SCREEN.x / w * RADAR.size.x, RADAR.size.y), Color(1, 1, 1, 0.55), false, 1.0)
 
 
 func _pos(u) -> Vector2:
@@ -376,7 +483,7 @@ func _draw_unit(u) -> void:
 				_draw_general(u, p, fade, flash)
 			_:
 				_draw_knight(u, p, fade, flash)
-	if u.alive and u.hp < u.max_hp and not u.is_general:
+	if u.alive and u.hp < u.max_hp and not u.is_general and _clock - _hurt_at.get(u.id, -99.0) < HURT_BAR_TIME:
 		var w := 14.0 if u.kind != "mini" else 9.0
 		var bar_y := -26.0 if u.kind == "knight" else (-20.0 if u.kind == "big" else -14.0)
 		if _sprites.has(u.type_id):
@@ -490,31 +597,6 @@ func _draw_general(u, p: Vector2, fade: float, flash: bool) -> void:
 		draw_line(hand, tip, Color("f0f0ff"), 2.0)
 
 
-## Top-of-field HP bars for both generals (first side on the left).
-func _draw_general_bars() -> void:
-	if sim.time <= 0.0:
-		return  # setup screen: the formation panel sits here
-	var font := ThemeDB.fallback_font
-	for i in sim.sides.size():
-		var g = sim.general_of(sim.sides[i].id)
-		if g == null:
-			continue
-		var w := 150.0
-		var x := 6.0 if i == 0 else 480.0 - 6.0 - w
-		var y := 20.0
-		var k := clampf(g.hp / g.max_hp, 0.0, 1.0)
-		draw_rect(Rect2(x - 1, y - 1, w + 2, 6), Color(0, 0, 0, 0.7))
-		var col := Color("e05a4a") if k < 0.3 else HP_FG
-		if i == 0:
-			draw_rect(Rect2(x, y, w * k, 4), col)
-		else:
-			draw_rect(Rect2(x + w * (1.0 - k), y, w * k, 4), col)
-		var label := "แม่ทัพ%s %d" % [_side_label(sim.sides[i].id), maxi(0, ceili(g.hp))]
-		var tw := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 9).x
-		var tx := x if i == 0 else x + w - tw
-		draw_string(font, Vector2(tx, y + 14), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.9))
-
-
 func _side_label(id: String) -> String:
 	for sd in sim.cfg.sides:
 		if sd.id == id:
@@ -564,10 +646,21 @@ func _draw_lanes() -> void:
 			draw_line(Vector2(cx + 4, b.x + 6), Vector2(cx, b.x + 2), Color(col, a * 4.0), 1.0)
 			draw_line(Vector2(cx - 4, b.y - 6), Vector2(cx, b.y - 2), Color(col, a * 4.0), 1.0)
 			draw_line(Vector2(cx + 4, b.y - 6), Vector2(cx, b.y - 2), Color(col, a * 4.0), 1.0)
-		if mine:
-			var font := ThemeDB.fallback_font
-			draw_string(font, Vector2(4 if f > 0.0 else 420, b.x + (b.y - b.x) / 2.0 + 3),
-					"เปิด %.1f" % maxf(0.0, s.split_left), HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color(col, 0.9))
+
+
+## Time left on the player's opened lane, at the screen edge on the player's
+## side (screen space, so it stays visible wherever the camera is).
+func _draw_lane_timer() -> void:
+	var s = sim.get_side(player_side)
+	if s == null or s.split_lane < 0 or sim.time <= 0.0:
+		return
+	var b: Vector2 = sim.lane_bounds(s.split_lane)
+	var font := ThemeDB.fallback_font
+	var text := "เปิด %.1f" % maxf(0.0, s.split_left)
+	var tw := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, 8).x
+	var x := 4.0 if s.facing > 0 else SCREEN.x - 4.0 - tw
+	draw_string(font, Vector2(x, b.x + (b.y - b.x) / 2.0 + 3.0 - cam.round().y), text,
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color(OPEN_LANE, 0.9))
 
 
 ## A special in its warning time: the lane it will run down blinks, with an
@@ -612,11 +705,12 @@ func _draw_banners() -> void:
 			lane_name = " · ทั้งสนาม"
 		var text := "%s%s%s  %.1f" % ["! " if enemy else "", s.special.get("label", ""), lane_name,
 				maxf(0.0, float(s.pending.t))]
-		var size := 11
+		var size := 10
 		var tw := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x
-		var y := 52.0 + row * 16.0
-		draw_rect(Rect2(240.0 - tw / 2.0 - 6.0, y - 11.0, tw + 12.0, 15.0), Color(0, 0, 0, 0.6))
-		draw_string(font, Vector2(240.0 - tw / 2.0, y), text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, col)
+		var y := 46.0 + row * 14.0
+		var cx := SCREEN.x / 2.0
+		draw_rect(Rect2(cx - tw / 2.0 - 5.0, y - 10.0, tw + 10.0, 13.0), Color(0, 0, 0, 0.6))
+		draw_string(font, Vector2(cx - tw / 2.0, y), text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, col)
 		row += 1
 
 
@@ -629,8 +723,11 @@ func _other_side(id: String) -> String:
 
 # --- duel close-up -------------------------------------------------------------
 
-const DUEL_X := [165.0, 315.0]  # first side (facing right) on the left
-const DUEL_Y := 214.0  # feet line: centre of the spotlight in the duel background
+const DUEL_X := [110.0, 210.0]  # first side (facing right) on the left (screen px)
+const DUEL_Y := 124.0  # feet line on screen: centre of the spotlight
+## The duel background is painted at 480x270 with the spotlight at y 214; the
+## screen shows this 320x180 window of it, spotlight on DUEL_Y.
+const DUEL_BG_CROP := Rect2(80, 90, 320, 180)
 const DUEL_SCALE := 2.6  # placeholder generals
 const DUEL_SPRITE_SCALE := 2.0  # sprites: integer scale keeps the pixels square
 
@@ -645,13 +742,13 @@ func _draw_duel() -> void:
 		_duel_bg = load(path) as Texture2D if path != "" and ResourceLoader.exists(path) else null
 	if _duel_bg != null:
 		# Painted duel scene (480x270, spotlight centred on DUEL_Y), fading in over the field.
-		draw_texture_rect(_duel_bg, Rect2(0, 0, 480, 270), false, Color(1, 1, 1, k))
+		draw_texture_rect_region(_duel_bg, Rect2(Vector2.ZERO, SCREEN), DUEL_BG_CROP, Color(1, 1, 1, k))
 	else:
-		draw_rect(Rect2(0, 0, 480, 270), Color(0.05, 0.05, 0.09, 0.85 * k + 0.1))
+		draw_rect(Rect2(Vector2.ZERO, SCREEN), Color(0.05, 0.05, 0.09, 0.85 * k + 0.1))
 		# spotlight and ground
-		draw_circle(Vector2(240, 300), 210.0, Color(0.95, 0.75, 0.45, 0.10))
-		draw_rect(Rect2(0, DUEL_Y, 480, 270 - DUEL_Y), Color(0.16, 0.13, 0.12))
-		draw_line(Vector2(0, DUEL_Y), Vector2(480, DUEL_Y), Color(0.95, 0.75, 0.45, 0.4), 1.0)
+		draw_circle(Vector2(160, 210), 140.0, Color(0.95, 0.75, 0.45, 0.10))
+		draw_rect(Rect2(0, DUEL_Y, SCREEN.x, SCREEN.y - DUEL_Y), Color(0.16, 0.13, 0.12))
+		draw_line(Vector2(0, DUEL_Y), Vector2(SCREEN.x, DUEL_Y), Color(0.95, 0.75, 0.45, 0.4), 1.0)
 	var font := ThemeDB.fallback_font
 	for i in sim.sides.size():
 		var s = sim.sides[i]
@@ -662,7 +759,7 @@ func _draw_duel() -> void:
 		if not g.alive:
 			fade = clampf(1.0 - (_clock - _died_at.get(g.id, _clock)) / 0.8, 0.0, 1.0)
 		# lunge toward the opponent while swinging
-		var lunge: float = (g.swing / 0.25) * 22.0 * float(s.facing) if g.swing > 0.0 else 0.0
+		var lunge: float = (g.swing / 0.25) * 16.0 * float(s.facing) if g.swing > 0.0 else 0.0
 		var shake := sin(_clock * 60.0) * 2.0 if g.fx > 0.0 else 0.0
 		var pos := Vector2(DUEL_X[i] + lunge + shake, DUEL_Y)
 		draw_ellipse_shadow(pos, fade)
@@ -671,9 +768,9 @@ func _draw_duel() -> void:
 			_draw_general(g, Vector2.ZERO, fade, g.fx > 0.0)
 			draw_set_transform(Vector2.ZERO)
 		# HP bar and name, big, on this general's side
-		var w := 170.0
-		var x := 20.0 if i == 0 else 480.0 - 20.0 - w
-		var y := 26.0
+		var w := 110.0
+		var x := 8.0 if i == 0 else SCREEN.x - 8.0 - w
+		var y := 10.0
 		var hp := clampf(g.hp / g.max_hp, 0.0, 1.0)
 		draw_rect(Rect2(x - 1, y - 1, w + 2, 9), Color(0, 0, 0, 0.8))
 		var col := Color("e05a4a") if hp < 0.3 else HP_FG
@@ -684,18 +781,18 @@ func _draw_duel() -> void:
 		var label := "แม่ทัพ%s  %d" % [_side_label(s.id), maxi(0, ceili(g.hp))]
 		var st: Dictionary = sim.duel_style(g)
 		var style := "ตี %d ครั้ง/ตา" % int(st.hits)
-		var tw := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x
+		var tw := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
 		var sw := font.get_string_size(style, HORIZONTAL_ALIGNMENT_LEFT, -1, 8).x
-		draw_string(font, Vector2(x if i == 0 else x + w - tw, y + 21), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 11,
+		draw_string(font, Vector2(x if i == 0 else x + w - tw, y + 18), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 10,
 				Color(1, 1, 1, 0.95))
-		draw_string(font, Vector2(x if i == 0 else x + w - sw, y + 32), style, HORIZONTAL_ALIGNMENT_LEFT, -1, 8,
+		draw_string(font, Vector2(x if i == 0 else x + w - sw, y + 28), style, HORIZONTAL_ALIGNMENT_LEFT, -1, 8,
 				Color(1, 1, 1, 0.6))
 	# whose turn: small marker over the attacker
 	if sim.over == "" and sim.duel.has("order"):
 		var atk: String = sim.duel.order[sim.duel.turn]
 		var idx := 0 if sim.sides[0].id == atk else 1
 		var mx: float = DUEL_X[idx]
-		draw_colored_polygon(PackedVector2Array([Vector2(mx - 5, 82), Vector2(mx + 5, 82), Vector2(mx, 89)]),
+		draw_colored_polygon(PackedVector2Array([Vector2(mx - 4, 20), Vector2(mx + 4, 20), Vector2(mx, 26)]),
 				Color(1, 0.85, 0.4, 0.8 + 0.2 * sin(_clock * 8.0)))
 	# damage numbers
 	for n in _duel_nums:
@@ -703,16 +800,16 @@ func _draw_duel() -> void:
 		if age > 1.0:
 			continue
 		var idx := 0 if sim.sides[0].id == n.side else 1
-		var size := 18 if n.get("big", false) else 13
-		var p := Vector2(DUEL_X[idx] - 10.0, 110.0 - age * 30.0)
+		var size := 16 if n.get("big", false) else 12
+		var p := Vector2(DUEL_X[idx] - 10.0, 62.0 - age * 24.0)
 		draw_string(font, p + Vector2(1, 1), n.text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, Color(0, 0, 0, 1.0 - age))
 		draw_string(font, p, n.text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, Color(n.col, 1.0 - age))
 	# title
 	if _duel_t0 >= 0.0 and _clock - _duel_t0 < 1.6:
 		var a := clampf(1.6 - (_clock - _duel_t0), 0.0, 1.0)
 		var title := "ดวล!"
-		var ttw := font.get_string_size(title, HORIZONTAL_ALIGNMENT_LEFT, -1, 26).x
-		draw_string(font, Vector2(240 - ttw / 2.0, 140), title, HORIZONTAL_ALIGNMENT_LEFT, -1, 26, Color(1, 0.85, 0.4, a))
+		var ttw := font.get_string_size(title, HORIZONTAL_ALIGNMENT_LEFT, -1, 22).x
+		draw_string(font, Vector2(SCREEN.x / 2.0 - ttw / 2.0, 96), title, HORIZONTAL_ALIGNMENT_LEFT, -1, 22, Color(1, 0.85, 0.4, a))
 
 
 func draw_ellipse_shadow(pos: Vector2, fade: float) -> void:
