@@ -17,13 +17,17 @@
 ##   general hurt with enemies on it: any hit, those enemies count danger_weight x.
 ##
 ## Dodging (checked every step): reaction_time s after an enemy cast starts,
-##   with chance dodge_skill: a lane special holding dodge_min_units of ours
-##   (the general counts general_weight) -> open that lane; a full-field special
+##   with chance dodge_skill: a lane special holding dodge_min_units of our
+##   troops -> open that lane; a full-field special
 ##   -> switch to full_response ("hold", "retreat" or "none") until it is over.
 ##
-## General charge (every think_interval s, after charge_after s): send the
-##   general in while its HP >= charge_hp and our troops' HP >= charge_adv x
-##   theirs; call it back when HP < return_hp or troops fall below return_adv x.
+## General charge (every think_interval s, after charge_after s), by the
+##   general's own style (units.<general>.ai_charge): "front" goes in while its
+##   HP >= charge_hp and comes back below return_hp; "never" stays; "mopup"
+##   (default) is a mop-up
+##   charge: send the general in while its HP >= charge_hp, our troops' HP >=
+##   charge_adv x theirs and at most charge_max_enemy_troops of theirs are left;
+##   call it back when HP < return_hp or troops fall below return_adv x.
 ## Tuning lives in battle_config.json "ai"; DEFAULTS below fill any gap.
 extends RefCounted
 
@@ -44,7 +48,8 @@ const DEFAULTS := {
 	"full_response": "hold",
 	"charge_after": 4.0,
 	"charge_hp": 0.7,
-	"charge_adv": 1.1,
+	"charge_adv": 1.5,
+	"charge_max_enemy_troops": 3,
 	"return_hp": 0.4,
 	"return_adv": 0.7,
 }
@@ -225,8 +230,9 @@ func _react_to(sim, s, e) -> void:
 		var y1 := float(info.y1)
 		var exposure := 0.0
 		for u in sim.units:
-			if u.alive and u.side == s and u.y >= y0 and u.y <= y1:
-				exposure += float(tuning.general_weight) if u.is_general else 1.0
+			# troops only: the general does not step out of an opened lane
+			if u.alive and u.side == s and not u.is_general and u.y >= y0 and u.y <= y1:
+				exposure += 1.0
 		if exposure >= float(tuning.dodge_min_units) and s.split_lane != lane:
 			sim.split(side_id, lane)
 		return
@@ -246,16 +252,33 @@ func _think_gcharge(sim, s) -> void:
 	if g == null or not g.alive or sim.time < float(tuning.charge_after):
 		return
 	var hp: float = g.hp / g.max_hp
+	# Each general has its own style (units.<general>.ai_charge):
+	#   "front" = fights at the front from the start, "mopup" = goes in to
+	#   finish a beaten army, "never" = always stays at its post.
+	var style := str(sim.cfg.units.get(g.type_id, {}).get("ai_charge", "mopup"))
+	if style == "never":
+		return
+	if style == "front":
+		# only alongside troops that are going in themselves
+		var with_troops: bool = not s.retreating and s.hold_range <= 0.0
+		if not s.gen_charge and hp >= float(tuning.charge_hp) and with_troops:
+			sim.set_general_charge(side_id, true)
+		elif s.gen_charge and (hp < float(tuning.return_hp) or not with_troops):
+			sim.set_general_charge(side_id, false)
+		return
 	var own := 0.0
 	var theirs := 0.0
+	var their_n := 0
 	for u in sim.units:
 		if u.alive and not u.is_general:
 			if u.side == s:
 				own += u.hp
 			else:
 				theirs += u.hp
+				their_n += 1
 	if not s.gen_charge:
-		if hp >= float(tuning.charge_hp) and own >= theirs * float(tuning.charge_adv):
+		if hp >= float(tuning.charge_hp) and own >= theirs * float(tuning.charge_adv) \
+				and their_n <= int(tuning.charge_max_enemy_troops):
 			sim.set_general_charge(side_id, true)
 	elif hp < float(tuning.return_hp) or own < theirs * float(tuning.return_adv):
 		sim.set_general_charge(side_id, false)

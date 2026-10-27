@@ -26,11 +26,14 @@
 ##   set_order   charge / hold / retreat. Changing order costs switch_delay s
 ##               where the troops stand frozen (opening a lane does not).
 ##   split       open a lane for split.duration s: troops in it step out to the
-##               neighbouring lane(s) and nobody walks into it; everyone fights
-##               a little worse while crowded (split.crowd_atk).
+##               neighbouring lane(s) and none walk into it; everyone fights a
+##               little worse while crowded (split.crowd_atk). The general does
+##               not move: it stands at its post (DF style), so a special aimed
+##               at its lane still hits it.
 ##   set_general_charge  the general fights at the front like a soldier: gains
 ##               MP per hit (general_charge.mp_on_hit), specials launch from
-##               the front, but takes channel_take x damage while channelling,
+##               the front, but takes front_take x damage out there (and
+##               channel_take x more while channelling),
 ##               and walks back slower when recalled.
 ##
 ## Events: hit, die, spawn, cast (warning starts), launch, wavehit, cancel,
@@ -49,8 +52,10 @@
 ##   godot --headless --script res://tools/run_sims.gd -- --config=res://data/battle_config_prototype.json --per-battle --dodge=off --enemy-dodge=off
 ##
 ## Generals (CLAUDE.md section 5): a side with "general" in the config fields a
-## general that hangs back behind its troops, fights when an enemy comes within
-## engage_range (or when its troops are gone), and the side loses when it falls.
+## general that stands at its post behind the army (DF style) and only hits
+## enemies that reach it, until set_general_charge sends it in. A general
+## whose troops are all gone fights on its own (and two such generals duel). The side loses when
+## its general falls.
 class_name BattleSim
 extends RefCounted
 
@@ -93,12 +98,14 @@ class Army:
 	var splits: int = 0  # times this side opened a lane
 	var gen_charge: bool = false  # general fights at the front
 	var gen_returning: bool = false  # recalled, walking back slowly
+	var home_x: float  # where the general stands when not sent in
+	var home_y: float
 	# Index of the general in `units`, -1 = none (side loses when all units are gone).
 	# An index, not a Unit reference: Unit.side points back here, and a
 	# reference cycle would leak.
 	var general_idx: int = -1
 	var troops: int  # alive non-general units at the start of the step
-	var troop_cx: float  # their centre, where the general follows
+	var troop_cx: float  # their centre
 	var troop_cy: float
 
 
@@ -129,9 +136,8 @@ class Unit:
 	var bx: float = 0.0  # where a split piece came from (view only)
 	var by: float = 0.0
 	var is_general: bool = false
+	var front_take: float = 0.0  # general: own damage-taken x at the front (0 = general_charge.front_take)
 	var flank_sign: int = 1  # -1 = upper half of the formation, +1 = lower (envelop side)
-	var engage_range: float = 0.0  # general: fights enemies closer than this
-	var follow_gap: float = 0.0  # general: stays this far behind its troops
 
 
 var cfg: Dictionary
@@ -257,6 +263,8 @@ func _init(config: Dictionary, overrides: Dictionary = {}, shared_rng: BattleRng
 		var gx := float(sd.general_spot[0])
 		g.x = gx if s.facing == 1 else float(_field.width) - gx
 		g.y = float(sd.general_spot[1])
+		s.home_x = g.x
+		s.home_y = g.y
 		g.t = rng.next() * float(_combat.start_cd_jitter)
 		g.anim = rng.next() * float(_combat.anim_jitter)
 		s.general_idx = units.size()
@@ -316,6 +324,7 @@ func step(dt: float) -> Array:
 	var crowd_atk := float(_split_cfg.get("crowd_atk", 1))
 	var mp_on_hit := float(_gcharge_cfg.get("mp_on_hit", 0))
 	var channel_take := float(_gcharge_cfg.get("channel_take", 1))
+	var front_take := float(_gcharge_cfg.get("front_take", 1))
 
 	# PROTOTYPE: loops over the snapshot without re-checking `alive`, so a unit
 	# killed earlier in this step still moves and can still attack this step.
@@ -333,10 +342,10 @@ func step(dt: float) -> Array:
 		if u.is_general and not us.pending.is_empty():
 			u.walking = false
 			continue
-		if us.split_lane >= 0 and _in_lane(us.split_lane, u.y):
+		if us.split_lane >= 0 and not u.is_general and _in_lane(us.split_lane, u.y):
 			_step_out_of_lane(u, dt)
 			continue
-		if us.retreating:
+		if us.retreating and not (u.is_general and not us.gen_charge):
 			_retreat(u, dt, move_y)
 			continue
 		if u.tg == null or not u.tg.alive or u.re <= 0.0:
@@ -362,8 +371,11 @@ func step(dt: float) -> Array:
 		var d := BattleMath.hypot(dx, dy)
 		if d == 0.0:
 			d = 1.0
-		if u.is_general and us.troops > 0 and d > u.engage_range and not us.gen_charge:
-			_follow_troops(u, dt, move_y)
+		# A general not sent in holds its post: it hits whoever reaches it but
+		# never chases (walks back to the post after a recall). With no troops
+		# left it fights on its own.
+		if u.is_general and not us.gen_charge and us.troops > 0 and d > u.reach:
+			_hold_post(u, dt, move_y)
 			continue
 		if d > u.reach:
 			if us.hold_range > 0.0 and d > us.hold_range and not (u.is_general and us.gen_charge):
@@ -379,7 +391,7 @@ func step(dt: float) -> Array:
 				dm = 1.0
 			var nx := u.x + dx / dm * sp * dt
 			var ny := u.y + my / dm * sp * dt
-			if us.split_lane >= 0:
+			if us.split_lane >= 0 and not u.is_general:
 				ny = _keep_out_of_lane(us.split_lane, u.y, ny)
 			if _leashed(u, nx, ny):
 				u.walking = false
@@ -402,8 +414,10 @@ func step(dt: float) -> Array:
 				dmg *= v.side.form_take
 				if us.split_lane >= 0:
 					dmg *= crowd_atk
-				if v.is_general and v.side.gen_charge and not v.side.pending.is_empty():
-					dmg *= channel_take
+				if v.is_general and v.side.gen_charge:
+					dmg *= v.front_take if v.front_take > 0.0 else front_take
+					if not v.side.pending.is_empty():
+						dmg *= channel_take
 				v.hp -= dmg
 				v.fx = hit_flash
 				if u.is_general and us.gen_charge and mp_on_hit > 0.0:
@@ -664,16 +678,13 @@ func _leashed(u: Unit, nx: float, ny: float) -> bool:
 	return dn > BattleMath.hypot(u.x - g.x, u.y - g.y)
 
 
-## General walks to a point follow_gap behind the centre of its troops
-## (slower while walking back from the front after a recall).
-func _follow_troops(u: Unit, dt: float, move_y: float) -> void:
+## General not sent in: stands at its post (where it started); after a
+## recall it walks back there
+## at return_spd_mult x speed.
+func _hold_post(u: Unit, dt: float, move_y: float) -> void:
 	var s := u.side
-	var px := s.troop_cx - float(s.facing) * u.follow_gap
-	px = clampf(px, float(_field.x_min), float(_field.x_max))
-	var dx := px - u.x
-	var dy := s.troop_cy - u.y
-	if s.split_lane >= 0 and _in_lane(s.split_lane, s.troop_cy):
-		dy = 0.0
+	var dx := s.home_x - u.x
+	var dy := s.home_y - u.y
 	var d := BattleMath.hypot(dx, dy)
 	if d < 2.0:
 		u.walking = false
@@ -689,8 +700,6 @@ func _follow_troops(u: Unit, dt: float, move_y: float) -> void:
 		dm = 1.0
 	u.x += dx / dm * sp * dt
 	var ny := u.y + my / dm * sp * dt
-	if s.split_lane >= 0:
-		ny = _keep_out_of_lane(s.split_lane, u.y, ny)
 	u.y = ny
 	u.walking = true
 
@@ -862,8 +871,7 @@ func _make_unit(s: Army, type_id: String) -> Unit:
 	u.radius = float(def.radius)
 	u.split = def.get("split", {})
 	u.is_general = def.get("role", "") == "general"
-	u.engage_range = float(def.get("engage_range", 0))
-	u.follow_gap = float(def.get("follow_gap", 0))
+	u.front_take = float(def.get("front_take", 0))
 	if def.has("scale_from"):
 		var base: Dictionary = cfg.units[def.scale_from]
 		var p := float(def.strength_pct) / 100.0

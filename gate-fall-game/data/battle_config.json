@@ -42,8 +42,8 @@
   "_split_note": "Open a lane: troops in it step out to the neighbouring lane at speed_mult x their speed, nobody enters it for duration s, everyone hits crowd_atk x while it is open. margin = px around the lane that also counts as inside.",
   "split": { "label": "แยกเลน", "duration": 2.5, "speed_mult": 2.5, "crowd_atk": 0.95, "margin": 2 },
 
-  "_general_charge_note": "General fights at the front: +mp_on_hit MP per hit it lands, specials launch from where it stands; takes channel_take x damage while channelling a special at the front; walks back at return_spd_mult x speed when recalled.",
-  "general_charge": { "label": "แม่ทัพลงสนาม", "mp_on_hit": 8, "channel_take": 1.25, "return_spd_mult": 0.8 },
+  "_general_charge_note": "General fights at the front: +mp_on_hit MP per hit it lands, specials launch from where it stands; takes front_take x damage out there, and channel_take x on top while channelling a special; walks back at return_spd_mult x speed when recalled.",
+  "general_charge": { "label": "แม่ทัพลงสนาม", "mp_on_hit": 8, "front_take": 1.5, "channel_take": 1.25, "return_spd_mult": 0.8 },
 
   "units": {
     "slime_big": {
@@ -73,18 +73,18 @@
       "hp": 64, "atk": 7, "cd": 1.1, "spd": 24,
       "reach": 25, "radius": 10
     },
-    "_generals_note": "Generals, starting point from run_sims: slime general 6x hp / 3x atk of a big slime; knight general 5x hp / ~2.6x atk of a knight (6x/3x made slimes win only 5-20%). A bit slower than troops. engage_range = fights enemies this close; follow_gap = hangs this far behind its troops.",
+    "_generals_note": "Generals start at general_spot behind their army and stay there (hitting only enemies that reach them) until sent in with general_charge; sized so a general-vs-general duel (when all troops are gone) is about even: slime 310 hp / 17 atk vs knight 320 / 18. Each general has a style: front_take = its own damage-taken x when sent in (else general_charge.front_take), ai_charge = how the AI uses it: front (fights at the front from the start), mopup (goes in to finish a beaten army), never. The slime general is a brawler (strong at the front, so it pays more there); the knight general is a commander who should stay back",
     "general_slime": {
       "kind": "general", "role": "general",
-      "hp": 288, "atk": 15, "cd": 1.0, "spd": 24,
+      "hp": 310, "atk": 17, "cd": 1.0, "spd": 24,
       "reach": 28, "radius": 14,
-      "engage_range": 70, "follow_gap": 45
+      "front_take": 2.5, "ai_charge": "front"
     },
     "general_knight": {
       "kind": "general", "role": "general",
       "hp": 320, "atk": 18, "cd": 1.1, "spd": 20,
       "reach": 28, "radius": 14,
-      "engage_range": 70, "follow_gap": 45
+      "front_take": 1.5, "ai_charge": "never"
     }
   },
 
@@ -135,7 +135,7 @@
       "lanes": 0,
       "telegraph": 1.75,
       "launch_offset": 12,
-      "range": 300,
+      "range": 420,
       "min_damage_pct": 40,
       "start_x": 30,
       "speed": 300,
@@ -163,7 +163,7 @@
     }
   },
 
-  "_ai_note": "BattleAI, see scripts/battle/BattleAI.gd (same brain for either side). Casting: every think_interval s, hit value per enemy = share of max HP taken + kill_bonus if it dies, general x general_weight; cast when the best lane holds min_share of the value of hitting every enemy; full MP lowers it to full_mp_min_share; own general below danger_hp with enemies within danger_range: any hit, those enemies x danger_weight. Dodging: reaction_time s after an enemy cast, chance dodge_skill: open the lane if it holds dodge_min_units (general = general_weight); full-field special -> full_response order until it passes. General charge: after charge_after s, go in at HP >= charge_hp with troop HP >= charge_adv x enemy's; come back at HP < return_hp or troop HP < return_adv x.",
+  "_ai_note": "BattleAI, see scripts/battle/BattleAI.gd (same brain for either side). Casting: every think_interval s, hit value per enemy = share of max HP taken + kill_bonus if it dies, general x general_weight; cast when the best lane holds min_share of the value of hitting every enemy; full MP lowers it to full_mp_min_share; own general below danger_hp with enemies within danger_range: any hit, those enemies x danger_weight. Dodging: reaction_time s after an enemy cast, chance dodge_skill: open the lane if it holds dodge_min_units (general = general_weight); full-field special -> full_response order until it passes. General charge (mop-up): after charge_after s, go in at HP >= charge_hp with troop HP >= charge_adv x enemy's and at most charge_max_enemy_troops enemy troops left; come back at HP < return_hp or troop HP < return_adv x.",
   "ai": {
     "think_interval": 0.5,
     "min_share": 0.35,
@@ -179,7 +179,8 @@
     "full_response": "hold",
     "charge_after": 4,
     "charge_hp": 0.7,
-    "charge_adv": 1.1,
+    "charge_adv": 1.5,
+    "charge_max_enemy_troops": 3,
     "return_hp": 0.4,
     "return_adv": 0.7
   },
