@@ -45,7 +45,7 @@
   "_duel_rules_note": "When both armies are gone and both generals stand, the battle cuts to a duel (BattleSim duel section). offer_time = s each side has to choose duel or retreat (undecided = duel; retreat = lose the battle, general survives). Then turns alternate, the faster general first: start_gap s before the first blow, hit_gap s between blows in a turn, turn_gap s between turns. The player only watches.",
   "duel_rules": { "offer_time": 8, "start_gap": 1.2, "hit_gap": 0.3, "turn_gap": 0.9 },
 
-  "_general_charge_note": "General fights at the front: +mp_on_hit MP per hit it lands, specials launch from where it stands; takes front_take x damage out there, and channel_take x on top while channelling a special; walks back at return_spd_mult x speed when recalled.",
+  "_general_charge_note": "General fights at the front: +mp_on_hit MP per hit it lands, specials launch from where it stands; takes front_take x damage out there, and channel_take x on top while channelling a special; walks back at return_spd_mult x speed when recalled (front_take still applies until it is home). A general never runs from a fight: it ignores the retreat order and a recall while an enemy is hitting it or stands within its reach; with no troops left it walks to the nearest enemy soldier.",
   "general_charge": { "label": "แม่ทัพลงสนาม", "mp_on_hit": 8, "front_take": 1.5, "channel_take": 1.25, "return_spd_mult": 0.8 },
 
   "units": {
@@ -170,7 +170,7 @@
     }
   },
 
-  "_ai_note": "BattleAI, see scripts/battle/BattleAI.gd (same brain for either side). Casting: every think_interval s, hit value per enemy = share of max HP taken + kill_bonus if it dies, general x general_weight; cast when the best lane holds min_share of the value of hitting every enemy; full MP lowers it to full_mp_min_share; own general below danger_hp with enemies within danger_range: any hit, those enemies x danger_weight. Dodging: reaction_time s after an enemy cast, chance dodge_skill: open the lane if it holds dodge_min_units (general = general_weight); full-field special -> full_response order until it passes. General charge (mop-up): after charge_after s, go in at HP >= charge_hp with troop HP >= charge_adv x enemy's and at most charge_max_enemy_troops enemy troops left; come back at HP < return_hp or troop HP < return_adv x. Duel offer: retreat if our general needs more than duel_retreat_ratio x the turns theirs needs to win.",
+  "_ai_note": "BattleAI, see scripts/battle/BattleAI.gd (same brain for either side). Casting: every think_interval s, hit value per enemy = share of max HP taken + kill_bonus if it dies, general x general_weight; cast when the best lane holds min_share of the value of hitting every enemy; full MP lowers it to full_mp_min_share; own general below danger_hp with enemies within danger_range: any hit, those enemies x danger_weight. Dodging: reaction_time s after an enemy cast, chance dodge_skill: open the lane if it holds dodge_min_units (general = general_weight); full-field special -> full_response order until it passes. General charge (mop-up): after charge_after s, go in at HP >= charge_hp with troop HP >= charge_adv x enemy's and at most charge_max_enemy_troops enemy troops left; come back when troop HP < return_adv x (never for low HP: a general stands and takes the hits, and a recalled one only walks back once nobody is fighting it). Duel offer: retreat if our general needs more than duel_retreat_ratio x the turns theirs needs to win.",
   "ai": {
     "think_interval": 0.5,
     "min_share": 0.35,
@@ -188,7 +188,6 @@
     "charge_hp": 0.7,
     "charge_adv": 1.5,
     "charge_max_enemy_troops": 3,
-    "return_hp": 0.4,
     "return_adv": 0.7,
     "duel_retreat_ratio": 1.5
   },

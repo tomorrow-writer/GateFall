@@ -54,8 +54,11 @@
 ## Generals (CLAUDE.md section 5): a side with "general" in the config fields a
 ## general that stands at its post behind the army (DF style) and only hits
 ## enemies that reach it, until set_general_charge sends it in. A general
-## whose troops are all gone fights on its own (and two such generals duel). The side loses when
-## its general falls.
+## never runs from a fight: once an enemy is hitting it (or stands within its
+## reach) it turns on that enemy and stands its ground, whatever the order or
+## a recall says (_attacker_of). A general whose troops are all gone walks to
+## the nearest enemy soldier and fights on its own (and two such generals
+## duel). The side loses when its general falls.
 class_name BattleSim
 extends RefCounted
 
@@ -355,10 +358,15 @@ func step(dt: float) -> Array:
 		if us.split_lane >= 0 and not u.is_general and _in_lane(us.split_lane, u.y):
 			_step_out_of_lane(u, dt)
 			continue
-		if us.retreating and not (u.is_general and not us.gen_charge):
+		# Retreat moves troops only: a general never turns its back on a fight.
+		if us.retreating and not u.is_general:
 			_retreat(u, dt, move_y)
 			continue
-		if u.tg == null or not u.tg.alive or u.re <= 0.0:
+		# A general under attack answers the attacker, whatever else it was doing.
+		var foe: Unit = _attacker_of(u, live) if u.is_general else null
+		if foe != null:
+			u.tg = foe
+		elif u.tg == null or not u.tg.alive or u.re <= 0.0:
 			var best: Unit = null
 			var bd := 1e9
 			for v in live:
@@ -368,6 +376,10 @@ func step(dt: float) -> Array:
 					var dd := ex * ex + ey * ey
 					if v.is_general and not u.is_general:
 						dd *= us.general_pull
+					# A general left without troops goes for the nearest enemy
+					# soldier (the enemy general only once its troops are gone).
+					elif v.is_general and u.is_general and us.troops == 0 and v.side.troops > 0:
+						dd *= 1e6
 					if dd < bd:
 						bd = dd
 						best = v
@@ -382,13 +394,14 @@ func step(dt: float) -> Array:
 		if d == 0.0:
 			d = 1.0
 		# A general not sent in holds its post: it hits whoever reaches it but
-		# never chases (walks back to the post after a recall). With no troops
-		# left it fights on its own.
-		if u.is_general and not us.gen_charge and us.troops > 0 and d > u.reach:
+		# never chases (walks back to the post after a recall, but only once
+		# nobody is fighting it). With no troops left it fights on its own.
+		if u.is_general and foe == null and not us.gen_charge and us.troops > 0 and d > u.reach:
 			_hold_post(u, dt, move_y)
 			continue
 		if d > u.reach:
-			if us.hold_range > 0.0 and d > us.hold_range and not (u.is_general and us.gen_charge):
+			# hold_range keeps troops in place; generals follow their own rules above.
+			if us.hold_range > 0.0 and d > us.hold_range and not u.is_general:
 				u.walking = false
 				continue
 			var sp := u.spd * us.form_spd
@@ -424,7 +437,8 @@ func step(dt: float) -> Array:
 				dmg *= v.side.form_take
 				if us.split_lane >= 0:
 					dmg *= crowd_atk
-				if v.is_general and v.side.gen_charge:
+				# Out at the front (sent in, or recalled but not back yet).
+				if v.is_general and (v.side.gen_charge or v.side.gen_returning):
 					dmg *= v.front_take if v.front_take > 0.0 else front_take
 					if not v.side.pending.is_empty():
 						dmg *= channel_take
@@ -846,6 +860,23 @@ func _leashed(u: Unit, nx: float, ny: float) -> bool:
 	if dn <= u.side.leash:
 		return false
 	return dn > BattleMath.hypot(u.x - g.x, u.y - g.y)
+
+
+## The enemy a general must stand and fight right now, or null: the nearest
+## enemy that is hitting it (targets it and is within its own reach) or that
+## stands within the general's reach.
+func _attacker_of(g: Unit, live: Array[Unit]) -> Unit:
+	var best: Unit = null
+	var bd := 1e9
+	for v in live:
+		if not v.alive or v.side == g.side:
+			continue
+		var d := BattleMath.hypot(v.x - g.x, v.y - g.y)
+		var hitting := v.tg == g and d <= v.reach + 2.0
+		if (hitting or d <= g.reach) and d < bd:
+			bd = d
+			best = v
+	return best
 
 
 ## General not sent in: stands at its post (where it started); after a
