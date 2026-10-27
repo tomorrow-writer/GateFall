@@ -197,7 +197,7 @@
     "slime_big": { "dir": "res://assets/units/slime_big", "frame": [32, 32], "foot": [16, 29], "height": 19, "anims": { "idle": {"frames": 2, "fps": 3}, "walk": {"frames": 4, "fps": 8}, "attack": {"frames": 3, "fps": 12, "loop": false}, "die": {"frames": 3, "fps": 6, "loop": false} } },
     "slime_mini": { "dir": "res://assets/units/slime_mini", "frame": [16, 16], "foot": [8, 13], "height": 11, "anims": { "idle": {"frames": 2, "fps": 3}, "walk": {"frames": 4, "fps": 8}, "attack": {"frames": 3, "fps": 12, "loop": false}, "die": {"frames": 3, "fps": 6, "loop": false} } },
     "general_slime": { "dir": "res://assets/units/general_slime", "frame": [64, 48], "foot": [24, 46], "height": 46, "anims": { "idle": {"frames": 2, "fps": 3}, "walk": {"frames": 4, "fps": 8}, "attack": {"frames": 3, "fps": 12, "loop": false}, "cast": {"frames": 2, "fps": 4}, "die": {"frames": 3, "fps": 6, "loop": false} } },
-    "general_knight": { "dir": "res://assets/units/general_knight", "frame": [48, 48], "foot": [24, 46], "height": 46, "anims": { "idle": {"frames": 2, "fps": 3}, "walk": {"frames": 4, "fps": 8}, "attack": {"frames": 3, "fps": 12, "loop": false}, "cast": {"frames": 2, "fps": 4}, "die": {"frames": 3, "fps": 6, "loop": false} } }
+    "general_knight": { "dir": "res://assets/units/general_knight", "frame": [72, 48], "foot": [22, 46], "height": 46, "anims": { "idle": {"frames": 2, "fps": 3}, "walk": {"frames": 4, "fps": 8}, "attack": {"frames": 3, "fps": 12, "loop": false}, "cast": {"frames": 2, "fps": 4}, "die": {"frames": 3, "fps": 6, "loop": false} } }
   },
 
   "_sides_note": "Side order matters: units spawn interleaved in this order, and if both armies die on the same step the first side wins (prototype behaviour).",

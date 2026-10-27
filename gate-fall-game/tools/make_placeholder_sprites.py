@@ -99,7 +99,7 @@ def general(dr, ox, slime_gen, bob=0, swing=0, cast=0, dead=0):
 
 
 # Units that already have real art: never overwrite them with placeholders.
-REAL_ART = {"general_slime"}
+REAL_ART = {"general_slime", "general_knight"}
 
 
 def make_unit(unit, w, h, draw_fn, troop=False):
