@@ -35,6 +35,10 @@ var alpha := 1.0
 var _prev := {}  # unit id -> Vector2 position at the previous step
 var _died_at := {}  # unit id -> view clock when it died
 var _born_at := {}  # unit id -> view clock when it split off
+var _hurt_at := {}  # unit id -> view clock when it was last hit (troop HP bars show briefly)
+## Troop HP bars only show for this long after a hit: with armies of 30 a bar
+## over every soldier is noise (DF shows none); a short one marks who is hurt.
+const HURT_BAR_TIME := 1.2
 var _fx: Array = []  # {kind, pos, t0, dur}
 var _clock := 0.0
 var _flash := 0.0  # full-screen flash when a special is cast
@@ -79,6 +83,7 @@ func bind(s: BattleSim) -> void:
 	_facing.clear()
 	_died_at.clear()
 	_born_at.clear()
+	_hurt_at.clear()
 	_fx.clear()
 	_duel_t0 = -1.0
 	_duel_nums.clear()
@@ -128,8 +133,10 @@ func handle_events(events: Array) -> void:
 	for e in events:
 		match e.type:
 			"hit":
+				_hurt_at[e.id] = _clock
 				_fx.append({"kind": "spark", "pos": Vector2(e.x, e.y - 8), "t0": _clock, "dur": 0.2})
 			"wavehit":
+				_hurt_at[e.id] = _clock
 				var by = sim.get_side(e.get("by", ""))
 				var hit_id := _special_fx(by, "hit")
 				if hit_id != "":
@@ -476,7 +483,7 @@ func _draw_unit(u) -> void:
 				_draw_general(u, p, fade, flash)
 			_:
 				_draw_knight(u, p, fade, flash)
-	if u.alive and u.hp < u.max_hp and not u.is_general:
+	if u.alive and u.hp < u.max_hp and not u.is_general and _clock - _hurt_at.get(u.id, -99.0) < HURT_BAR_TIME:
 		var w := 14.0 if u.kind != "mini" else 9.0
 		var bar_y := -26.0 if u.kind == "knight" else (-20.0 if u.kind == "big" else -14.0)
 		if _sprites.has(u.type_id):

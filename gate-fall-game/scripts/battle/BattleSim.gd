@@ -602,9 +602,13 @@ func launch_x(s: Army) -> float:
 
 
 ## Damage a special does to u when its front has travelled `travelled` px.
+## Generals take damage_general when set (troops are many and small, generals
+## are one big unit, so the two are tuned apart), else damage.
 func special_damage(s: Army, u: Unit, travelled: float) -> float:
 	var sp := s.special
 	var dmg := float(sp.damage)
+	if u.is_general and sp.has("damage_general"):
+		dmg = float(sp.damage_general)
 	var rng_px := float(sp.get("range", 0))
 	if rng_px > 0.0:
 		var k := clampf(travelled / rng_px, 0.0, 1.0)
