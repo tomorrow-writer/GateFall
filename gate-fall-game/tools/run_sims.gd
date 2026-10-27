@@ -21,6 +21,9 @@
 ##   --rows=on|off|both  which special rows to run (default both)
 ##   --enemy-dodge=on|off   (default on)
 ##   --enemy-gcharge=X      enemy general: ai (default) | never | always
+##   --units=T:N,T:N        player troops instead of sides[].unit x count, front
+##                          ranks first (e.g. slime_big:20,slime_mage:10; dev mode)
+##   --enemy-units=T:N,...  same for the enemy
 ##
 ## Each combo = formation x order x special (auto-cast on/off) for the commanded side.
 ## surv(win) / enemy(loss) count troops only; genHP = player's general HP left on wins;
@@ -59,6 +62,8 @@ func _init() -> void:
 		"cast_ai": str(opts.get("cast", "auto")) == "ai",
 		"enemy_dodge": str(opts.get("enemy-dodge", "on")) == "on",
 		"enemy_gcharge": str(opts.get("enemy-gcharge", "ai")),
+		"units": _units_arg(str(opts.get("units", ""))),
+		"enemy_units": _units_arg(str(opts.get("enemy-units", ""))),
 	}
 	var dt := 1.0 / float(cfg.sim.steps_per_second)
 	var enemy_id := ""
@@ -68,6 +73,9 @@ func _init() -> void:
 
 	print("Gatefall battle sims: %d runs/combo, seed %d, player side %s vs %s (enemy AI %s), %s" % [runs, seed_value,
 			side_id, enemy_id, enemy_ai, opts.get("config", "res://data/battle_config.json")])
+	if not extra.units.is_empty() or not extra.enemy_units.is_empty():
+		print("troops: player %s · enemy %s" % [str(extra.units) if not extra.units.is_empty() else "config",
+				str(extra.enemy_units) if not extra.enemy_units.is_empty() else "config"])
 	print("player dodge %s, general %s · enemy dodge %s, general %s" % ["on" if extra.dodge else "off",
 			extra.gcharge, "on" if extra.enemy_dodge else "off", extra.enemy_gcharge])
 	print("%-9s %-7s %-8s %7s %7s %10s %10s %8s %14s %14s %6s %6s %6s %6s" % ["formation", "order", "special", "win%", "time",
@@ -95,6 +103,10 @@ func _run_combo(cfg: Dictionary, side_id: String, enemy_id: String, form: String
 					"ai": auto and extra.cast_ai, "dodge": extra.dodge, "gcharge": extra.gcharge},
 			enemy_id: {"ai": enemy_ai == "on", "auto_cast": enemy_ai == "auto",
 					"dodge": extra.enemy_dodge, "gcharge": extra.enemy_gcharge}}
+	if not extra.units.is_empty():
+		overrides[side_id]["units"] = extra.units
+	if not extra.enemy_units.is_empty():
+		overrides[enemy_id]["units"] = extra.enemy_units
 	var wins := 0
 	var total_time := 0.0
 	var surv := 0
@@ -175,4 +187,15 @@ func _parse_args(args: PackedStringArray) -> Dictionary:
 			continue
 		var kv := a.substr(2).split("=", true, 1)
 		out[kv[0]] = kv[1] if kv.size() > 1 else true
+	return out
+
+
+## "slime_big:20,slime_mage:10" -> [["slime_big", 20], ["slime_mage", 10]]; "" -> [].
+func _units_arg(text: String) -> Array:
+	var out: Array = []
+	if text == "":
+		return out
+	for part in text.split(","):
+		var kv := part.split(":")
+		out.append([kv[0], int(kv[1]) if kv.size() > 1 else 30])
 	return out

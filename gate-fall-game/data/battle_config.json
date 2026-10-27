@@ -80,6 +80,28 @@
       "hp": 21.33, "atk": 2.33, "cd": 1.1, "spd": 24,
       "reach": 25, "radius": 8
     },
+    "_ranged_note": "Ranged troops (dev mode for now, CLAUDE.md section 4: slime mage, archer), DF style: they stand and shoot from far (reach = range, 240-260 px: from their start spot they reach the enemy front line) at the enemy straight ahead (ranged.aim_y x the usual y weight when picking targets, so they keep to their own row), but are fragile up close: ranged.melee_take = x damage they take from melee hits (shots and specials excluded), and an enemy within close_range gets only a weak point-blank hit (close_mult x). speed = shot px/s (damage lands on arrival, wasted if the target fell), arc = px the shot rises (view only). 100 runs, line, vs AI: slime player charge: spear 30 = 41%, spear 20 + mage 10 = 66%, mage 30 = 98%; hold: 6% / 100% / 100%. Knight player charge: knight 30 = 59%, knight 20 + archer 10 = 56%. All-ranged armies win almost always because the AI has no answer yet (it walks into the shots); tune with run_sims --units= / --enemy-units=.",
+    "slime_mage": {
+      "kind": "mage",
+      "hp": 13, "atk": 1.45, "cd": 1.3, "spd": 24,
+      "reach": 240, "radius": 8,
+      "ranged": { "speed": 220, "close_range": 16, "close_mult": 0.5, "melee_take": 2, "aim_y": 3, "arc": 30 },
+      "split": {
+        "into": "slime_mini",
+        "count": 2,
+        "offset_x": 10,
+        "offset_y": 8,
+        "first_attack_min": 0.5,
+        "first_attack_jitter": 0.4,
+        "born_time": 0.4
+      }
+    },
+    "archer": {
+      "kind": "archer",
+      "hp": 14, "atk": 1.3, "cd": 1.4, "spd": 22,
+      "reach": 260, "radius": 8,
+      "ranged": { "speed": 260, "close_range": 16, "close_mult": 0.5, "melee_take": 2, "aim_y": 3, "arc": 28 }
+    },
     "_generals_note": "Generals start at general_spot behind their army and stay there (hitting only enemies that reach them) until sent in with general_charge; sized so a general-vs-general duel (when all troops are gone) is about even: slime 310 hp / 17 atk vs knight 320 / 18. Each general has a style: front_take = its own damage-taken x when sent in (else general_charge.front_take), ai_charge = how the AI uses it: front (fights at the front from the start), mopup (goes in to finish a beaten army), never. The slime general is a brawler (strong at the front, so it pays more there); the knight general is a commander who should stay back. duel = style in the one-on-one duel (see duel_rules): hits blows per turn of power each (+- jitter share), each landing with chance accuracy. Slime general: two quick, steady blows; knight general: one heavy, swingy blow (same expected damage per turn, roughly)",
     "general_slime": {
       "kind": "general", "role": "general",
@@ -298,6 +320,19 @@
     "cavalry_rider": { "file": "res://assets/fx/cavalry_rider.png", "frame": [66, 44], "foot": [64, 43], "frames": 4, "fps": 12, "loop": true },
     "cavalry_dust": { "file": "res://assets/fx/cavalry_dust.png", "frame": [40, 22], "foot": [20, 21], "frames": 4, "fps": 10, "loop": true },
     "cavalry_impact": { "file": "res://assets/fx/cavalry_impact.png", "frame": [26, 26], "foot": [13, 13], "frames": 4, "fps": 16, "loop": false }
+  },
+
+  "_dev_note": "Dev mode (F3 on the setup screen, Battle.gd): pick each side's troops from troop_options (units = [[type, count], ...], front ranks first). For testing troop types before they get real art and balance; run_sims takes the same lists as --units=type:count,... / --enemy-units=...",
+  "dev": {
+    "troop_options": [
+      { "label": "สไลม์หอก 30", "units": [["slime_big", 30]] },
+      { "label": "สไลม์เวท 30 (ยิงไกล)", "units": [["slime_mage", 30]] },
+      { "label": "หอก 20 + เวท 10", "units": [["slime_big", 20], ["slime_mage", 10]] },
+      { "label": "หอก 15 + เวท 15", "units": [["slime_big", 15], ["slime_mage", 15]] },
+      { "label": "อัศวิน 30", "units": [["knight", 30]] },
+      { "label": "พลธนู 30 (ยิงไกล)", "units": [["archer", 30]] },
+      { "label": "อัศวิน 20 + ธนู 10", "units": [["knight", 20], ["archer", 10]] }
+    ]
   },
 
   "_sides_note": "Side order matters: units spawn interleaved in this order, and if both armies die on the same step the first side wins (prototype behaviour).",
