@@ -5,6 +5,9 @@
 ## Reads the sim's command state every frame: a special's warning time lights
 ## up its target lane (red when it is coming at the player), an opened lane is
 ## striped in the player's colour, a general sent in gets a red ring.
+## Sprites: units listed in the config "sprites" section are drawn from
+## sprite strips (see _load_sprites); anything without one falls back to the
+## placeholder shapes below, so art can be added one unit at a time.
 ## When the sim reaches its duel phase the view cuts to a close-up of the two
 ## generals trading blows (_draw_duel), with damage numbers from duel_hit.
 extends Node2D
@@ -38,12 +41,14 @@ var _flash := 0.0  # full-screen flash when a special is cast
 var _flash_col := WAVE
 ## Side the player commands: enemy warnings are drawn red, own ones in the special's colour.
 var player_side := ""
+var _sprites := {}  # unit type id -> {"anims": {name: {tex, frames, fps, loop}}, "foot": Vector2, "height"}
 var _duel_t0 := -1.0  # view clock when the duel started
 var _duel_nums: Array = []  # {side (target), text, t0, col}
 
 
 func bind(s: BattleSim) -> void:
 	sim = s
+	_load_sprites()
 	_prev.clear()
 	_died_at.clear()
 	_born_at.clear()
@@ -253,16 +258,22 @@ func _draw_unit(u) -> void:
 	var dead_t: float = _clock - _died_at.get(u.id, _clock)
 	var fade := 1.0 if u.alive else clampf(1.0 - dead_t / 0.6, 0.0, 1.0)
 	var flash: bool = u.fx > 0.0
-	match u.kind:
-		"big", "mini":
-			_draw_slime(u, p, fade, flash)
-		"general":
-			_draw_general(u, p, fade, flash)
-		_:
-			_draw_knight(u, p, fade, flash)
+	if u.is_general:
+		_draw_general_marks(u, p)
+	if not _draw_sprite(u, p, fade, flash, 1.0):
+		match u.kind:
+			"big", "mini":
+				_draw_slime(u, p, fade, flash)
+			"general":
+				_draw_general(u, p, fade, flash)
+			_:
+				_draw_knight(u, p, fade, flash)
 	if u.alive and u.hp < u.max_hp and not u.is_general:
 		var w := 14.0 if u.kind != "mini" else 9.0
-		var top := p + Vector2(-w / 2.0, -26.0 if u.kind == "knight" else (-20.0 if u.kind == "big" else -14.0))
+		var bar_y := -26.0 if u.kind == "knight" else (-20.0 if u.kind == "big" else -14.0)
+		if _sprites.has(u.type_id):
+			bar_y = -float(_sprites[u.type_id].height) - 2.0
+		var top := p + Vector2(-w / 2.0, bar_y)
 		draw_rect(Rect2(top, Vector2(w, 2)), HP_BG)
 		draw_rect(Rect2(top, Vector2(w * clampf(u.hp / u.max_hp, 0.0, 1.0), 2)), HP_FG)
 
@@ -318,6 +329,23 @@ func _draw_knight(u, p: Vector2, fade: float, flash: bool) -> void:
 
 ## Placeholder generals: slime general (green armour, red cape, orb staff) and
 ## knight general (gold-trimmed armour, blue cape). Both clearly bigger than troops.
+## Aura ring so the general is easy to find; red when sent into the fight,
+## pulsing glow while channelling a special. Drawn under sprite or placeholder.
+func _draw_general_marks(u, b: Vector2) -> void:
+	if not u.alive:
+		return
+	var s = u.side
+	if not s.pending.is_empty():
+		var col := _special_color(s)
+		draw_circle(b + Vector2(0, -20), 16.0 + sin(_clock * 16.0) * 3.0, Color(col, 0.25))
+		draw_arc(b + Vector2(0, -1), 15.0, 0, TAU * (1.0 - float(s.pending.t) / maxf(0.001, float(s.pending.total))),
+				24, Color(col, 0.9), 2.0)
+	if s.gen_charge:
+		draw_arc(b + Vector2(0, -1), 13.0, 0, TAU, 20, Color(CHARGE_RING, 0.85), 1.5)
+	else:
+		draw_arc(b + Vector2(0, -1), 13.0, 0, TAU, 20, Color(Color("d8b440"), 0.5), 1.0)
+
+
 func _draw_general(u, p: Vector2, fade: float, flash: bool) -> void:
 	var f: float = float(u.side.facing)
 	var bob := absf(sin(u.anim * 6.0)) * 1.5 if u.walking else 0.0
@@ -331,18 +359,6 @@ func _draw_general(u, p: Vector2, fade: float, flash: bool) -> void:
 	if not u.alive:
 		draw_rect(Rect2(b + Vector2(-13, -7), Vector2(26, 7)), Color(armour.darkened(0.4), fade))
 		return
-	# aura ring so the general is easy to find; red when sent into the fight,
-	# pulsing glow while channelling a special
-	var s = u.side
-	if not s.pending.is_empty():
-		var col := _special_color(s)
-		draw_circle(b + Vector2(0, -20), 16.0 + sin(_clock * 16.0) * 3.0, Color(col, 0.25))
-		draw_arc(b + Vector2(0, -1), 15.0, 0, TAU * (1.0 - float(s.pending.t) / maxf(0.001, float(s.pending.total))),
-				24, Color(col, 0.9), 2.0)
-	if s.gen_charge:
-		draw_arc(b + Vector2(0, -1), 13.0, 0, TAU, 20, Color(CHARGE_RING, 0.85), 1.5)
-	else:
-		draw_arc(b + Vector2(0, -1), 13.0, 0, TAU, 20, Color(trim, 0.5), 1.0)
 	draw_colored_polygon(PackedVector2Array([b + Vector2(-f * 3 - 5, -30), b + Vector2(-f * 3 + 5, -30),
 			b + Vector2(-f * 3 + 8, -4), b + Vector2(-f * 3 - 9, -4)]), cape)
 	draw_rect(Rect2(b + Vector2(-6, -30), Vector2(12, 22)), armour)
@@ -505,7 +521,8 @@ func _other_side(id: String) -> String:
 
 const DUEL_X := [165.0, 315.0]  # first side (facing right) on the left
 const DUEL_Y := 205.0
-const DUEL_SCALE := 2.6
+const DUEL_SCALE := 2.6  # placeholder generals
+const DUEL_SPRITE_SCALE := 2.0  # sprites: integer scale keeps the pixels square
 
 
 ## The duel: dark backdrop, the two generals big and facing each other, the
@@ -531,9 +548,10 @@ func _draw_duel() -> void:
 		var shake := sin(_clock * 60.0) * 2.0 if g.fx > 0.0 else 0.0
 		var pos := Vector2(DUEL_X[i] + lunge + shake, DUEL_Y)
 		draw_ellipse_shadow(pos, fade)
-		draw_set_transform(pos, 0.0, Vector2(DUEL_SCALE, DUEL_SCALE))
-		_draw_general(g, Vector2.ZERO, fade, g.fx > 0.0)
-		draw_set_transform(Vector2.ZERO)
+		if not _draw_sprite(g, pos, fade, g.fx > 0.0, DUEL_SPRITE_SCALE):
+			draw_set_transform(pos, 0.0, Vector2(DUEL_SCALE, DUEL_SCALE))
+			_draw_general(g, Vector2.ZERO, fade, g.fx > 0.0)
+			draw_set_transform(Vector2.ZERO)
 		# HP bar and name, big, on this general's side
 		var w := 170.0
 		var x := 20.0 if i == 0 else 480.0 - 20.0 - w
@@ -583,3 +601,90 @@ func draw_ellipse_shadow(pos: Vector2, fade: float) -> void:
 	draw_set_transform(pos + Vector2(0, 2), 0.0, Vector2(1.0, 0.25))
 	draw_circle(Vector2.ZERO, 30.0, Color(0, 0, 0, 0.45 * fade))
 	draw_set_transform(Vector2.ZERO)
+
+
+# --- sprites ---------------------------------------------------------------------
+# Config "sprites": { "<unit type id>": {
+#     "dir": "res://assets/units/<id>",  folder with one strip per animation
+#     "frame": [w, h],                   size of one frame (all strips)
+#     "foot": [x, y],                    pixel in the frame that stands on the ground
+#     "anims": { "idle": {"frames": 4, "fps": 6}, "walk": ..., "attack": ...,
+#                "cast": ..., "die": {"frames": 3, "fps": 8, "loop": false} } } }
+# Strips are <dir>/<anim>.png, frames left to right, character facing RIGHT
+# (flipped for the side facing left). Missing anims fall back to idle; a unit
+# with no idle strip uses the placeholder shapes.
+
+func _load_sprites() -> void:
+	_sprites.clear()
+	var defs: Dictionary = sim.cfg.get("sprites", {})
+	for id in defs:
+		if str(id).begins_with("_"):
+			continue
+		var d: Dictionary = defs[id]
+		var fw := int(d.frame[0])
+		var fh := int(d.frame[1])
+		var anims := {}
+		for a in d.get("anims", {}):
+			var ad: Dictionary = d.anims[a]
+			var path := "%s/%s.png" % [d.dir, a]
+			if not ResourceLoader.exists(path):
+				continue
+			var tex: Texture2D = load(path)
+			var n := int(ad.get("frames", maxi(1, tex.get_width() / fw)))
+			anims[a] = {"tex": tex, "frames": n, "fps": float(ad.get("fps", 6)), "loop": bool(ad.get("loop", true))}
+		if not anims.has("idle"):
+			continue
+		var foot: Array = d.get("foot", [fw / 2, fh - 1])
+		_sprites[id] = {"anims": anims, "w": fw, "h": fh, "foot": Vector2(foot[0], foot[1]),
+				"height": float(d.get("height", fh))}
+
+
+## Which animation a unit is in right now.
+func _anim_of(u) -> String:
+	if not u.alive:
+		return "die"
+	if u.is_general and not u.side.pending.is_empty():
+		return "cast"
+	if u.swing > 0.0:
+		return "attack"
+	if u.walking:
+		return "walk"
+	return "idle"
+
+
+## Draws u from its sprite strip with its feet at p. False = no sprite.
+func _draw_sprite(u, p: Vector2, fade: float, flash: bool, scale: float) -> bool:
+	if not _sprites.has(u.type_id):
+		return false
+	var sp: Dictionary = _sprites[u.type_id]
+	var name := _anim_of(u)
+	if not sp.anims.has(name):
+		if name == "die":
+			return true  # no death strip: just vanish (the poof fx plays)
+		name = "idle"
+	var a: Dictionary = sp.anims[name]
+	var t: float = u.anim
+	if name == "die":
+		t = _clock - _died_at.get(u.id, _clock)
+	elif name == "attack":
+		t = 0.25 - u.swing  # swing counts down from swing_time
+	var i := int(t * a.fps)
+	i = i % int(a.frames) if a.loop else mini(i, int(a.frames) - 1)
+	var w: float = sp.w
+	var h: float = sp.h
+	var f := float(u.side.facing)
+	var foot: Vector2 = sp.foot
+	# born pop-in for split slimes
+	var born: float = _clock - _born_at.get(u.id, -10.0)
+	var pop := clampf(born / 0.25, 0.3, 1.0) if born < 0.25 else 1.0
+	var s := scale * pop
+	# drawn in a frame mirrored around the feet for the side facing left
+	draw_set_transform(p, 0.0, Vector2(s * f, s))
+	var dst := Rect2(-foot.x, -foot.y, w, h)
+	var src := Rect2(i * w, 0, w, h)
+	draw_texture_rect_region(a.tex, dst, src, Color(1, 1, 1, fade))
+	if flash:
+		# white flash: draw again over-bright
+		draw_texture_rect_region(a.tex, dst, src, Color(3, 3, 3, 0.6 * fade))
+	draw_set_transform(Vector2.ZERO)
+	return true
