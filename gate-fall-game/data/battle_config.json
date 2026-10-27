@@ -7,9 +7,9 @@
     "seed": 1
   },
 
-  "_field_note": "background = painted 480x270 image behind the battle (horizon at y 104, ground y 104-240, darker HUD strip below); duel_background = painted 480x270 image for the generals' duel (spotlight centred on y 214, where the generals stand, top corners kept dark for the HP bars). Leave either out to get the drawn placeholder.",
+  "_field_note": "background = 480x270 image behind the battle; the 320x180 camera shows y 76-256 of it, so it is mostly ground. field_<name>.png come from tools/make_ground.py (DF-style plain ground: steppe, grass, hall; battle_plains_dusk.png is the older painted one) (horizon at y 104, ground y 104-240, darker HUD strip below); duel_background = painted 480x270 image for the generals' duel (spotlight centred on y 214, where the generals stand, top corners kept dark for the HP bars). Leave either out to get the drawn placeholder.",
   "field": {
-    "background": "res://assets/backgrounds/battle_plains_dusk.png",
+    "background": "res://assets/backgrounds/field_steppe.png",
     "duel_background": "res://assets/backgrounds/duel_plains_dusk.png",
     "width": 480,
     "x_min": 10,
