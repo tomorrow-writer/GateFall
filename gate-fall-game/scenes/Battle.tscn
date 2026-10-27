@@ -100,11 +100,10 @@ offset_bottom = -5.0
 grow_horizontal = 2
 grow_vertical = 0
 mouse_filter = 2
-theme_override_constants/separation = 4
+theme_override_constants/separation = 2
 
 [node name="ChargeButton" type="Button" parent="Hud/Root/BottomBar"]
 unique_name_in_owner = true
-custom_minimum_size = Vector2(64, 0)
 layout_mode = 2
 focus_mode = 0
 theme_override_font_sizes/font_size = 10
@@ -113,12 +112,33 @@ text = "บุก [1]"
 
 [node name="HoldButton" type="Button" parent="Hud/Root/BottomBar"]
 unique_name_in_owner = true
-custom_minimum_size = Vector2(64, 0)
 layout_mode = 2
 focus_mode = 0
 theme_override_font_sizes/font_size = 10
 toggle_mode = true
 text = "ตั้งรับ [2]"
+
+[node name="RetreatButton" type="Button" parent="Hud/Root/BottomBar"]
+unique_name_in_owner = true
+layout_mode = 2
+focus_mode = 0
+theme_override_font_sizes/font_size = 10
+toggle_mode = true
+text = "ถอย [3]"
+
+[node name="LaneBox" type="HBoxContainer" parent="Hud/Root/BottomBar"]
+unique_name_in_owner = true
+layout_mode = 2
+tooltip_text = "แยกเลน"
+theme_override_constants/separation = 1
+
+[node name="GeneralButton" type="Button" parent="Hud/Root/BottomBar"]
+unique_name_in_owner = true
+layout_mode = 2
+focus_mode = 0
+theme_override_font_sizes/font_size = 9
+toggle_mode = true
+text = "แม่ทัพลงสนาม [G]"
 
 [node name="Spacer" type="Control" parent="Hud/Root/BottomBar"]
 layout_mode = 2
@@ -127,7 +147,6 @@ mouse_filter = 2
 
 [node name="SpecialButton" type="Button" parent="Hud/Root/BottomBar"]
 unique_name_in_owner = true
-custom_minimum_size = Vector2(150, 0)
 layout_mode = 2
 focus_mode = 0
 theme_override_font_sizes/font_size = 10

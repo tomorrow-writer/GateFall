@@ -12,12 +12,20 @@
 ##   --enemy-ai=X    on (default): BattleAI decides when/where the enemy casts
 ##                   off: enemy never casts · auto: enemy casts as soon as ready
 ##   --form=NAME     only this formation (default: all)
+##   --orders=A,B    player orders to try (default charge,hold)
+##   --dodge=on|off  player side opens lanes / pulls back like the AI does
+##                   (default on: stands in for a player who reacts)
+##   --gcharge=X     player general: never (default) | always (in from the start) | ai
+##   --cast=auto|ai  how the player's special is fired in the "on" rows:
+##                   auto (default) = as soon as ready, best lane · ai = BattleAI timing
+##   --enemy-dodge=on|off   (default on)
+##   --enemy-gcharge=X      enemy general: ai (default) | never | always
 ##
 ## Each combo = formation x order x special (auto-cast on/off) for the commanded side.
 ## surv(win) / enemy(loss) count troops only; genHP = player's general HP left on wins;
-## eCast = enemy specials per battle.
+## cast/eCast = player/enemy specials per battle, split = lanes the player opened.
 ## Regression check against the JS prototype:
-##   ... run_sims.gd -- --config=res://data/battle_config_prototype.json --per-battle
+##   ... run_sims.gd -- --config=res://data/battle_config_prototype.json --per-battle --dodge=off --enemy-dodge=off
 ## The other side keeps the formation and order from the config.
 extends SceneTree
 
@@ -39,6 +47,14 @@ func _init() -> void:
 	var per_battle := opts.has("per-battle")
 	var enemy_ai: String = opts.get("enemy-ai", "on")
 	var only_form: String = opts.get("form", "")
+	var orders: PackedStringArray = str(opts.get("orders", ",".join(PLAYER_ORDERS))).split(",")
+	var extra := {
+		"dodge": str(opts.get("dodge", "on")) == "on",
+		"gcharge": str(opts.get("gcharge", "never")),
+		"cast_ai": str(opts.get("cast", "auto")) == "ai",
+		"enemy_dodge": str(opts.get("enemy-dodge", "on")) == "on",
+		"enemy_gcharge": str(opts.get("enemy-gcharge", "ai")),
+	}
 	var dt := 1.0 / float(cfg.sim.steps_per_second)
 	var enemy_id := ""
 	for sd in cfg.sides:
@@ -47,26 +63,33 @@ func _init() -> void:
 
 	print("Gatefall battle sims: %d runs/combo, seed %d, player side %s vs %s (enemy AI %s), %s" % [runs, seed_value,
 			side_id, enemy_id, enemy_ai, opts.get("config", "res://data/battle_config.json")])
-	print("%-9s %-7s %-8s %7s %7s %10s %10s %8s %6s" % ["formation", "order", "special", "win%", "time", "surv(win)",
-			"enemy(loss)", "genHP", "eCast"])
+	print("player dodge %s, general %s · enemy dodge %s, general %s" % ["on" if extra.dodge else "off",
+			extra.gcharge, "on" if extra.enemy_dodge else "off", extra.enemy_gcharge])
+	print("%-9s %-7s %-8s %7s %7s %10s %10s %8s %6s %6s %6s" % ["formation", "order", "special", "win%", "time", "surv(win)",
+			"enemy(loss)", "genHP", "cast", "eCast", "split"])
 	var started := Time.get_ticks_msec()
 	for form in cfg.formations.keys():
 		if only_form != "" and form != only_form:
 			continue
-		for order in PLAYER_ORDERS:
+		for order in orders:
 			for auto in [false, true]:
-				var r := _run_combo(cfg, side_id, enemy_id, form, order, auto, enemy_ai, runs, seed_value, dt, per_battle)
-				print("%-9s %-7s %-8s %6.1f%% %6.1fs %10.2f %10.2f %8s %6.2f" % [form, order, "on" if auto else "off",
-						r.win * 100.0, r.time, r.surv_win, r.surv_enemy, r.gen_hp, r.e_cast])
+				var r := _run_combo(cfg, side_id, enemy_id, form, order, auto, enemy_ai, runs, seed_value, dt,
+						per_battle, extra)
+				print("%-9s %-7s %-8s %6.1f%% %6.1fs %10.2f %10.2f %8s %6.2f %6.2f %6.2f" % [form, order,
+						"on" if auto else "off", r.win * 100.0, r.time, r.surv_win, r.surv_enemy, r.gen_hp,
+						r.p_cast, r.e_cast, r.splits])
 	print("done in %.1fs" % ((Time.get_ticks_msec() - started) / 1000.0))
 	quit()
 
 
 func _run_combo(cfg: Dictionary, side_id: String, enemy_id: String, form: String, order: String,
-		auto: bool, enemy_ai: String, runs: int, seed_value: int, dt: float, per_battle: bool) -> Dictionary:
+		auto: bool, enemy_ai: String, runs: int, seed_value: int, dt: float, per_battle: bool,
+		extra: Dictionary) -> Dictionary:
 	var rng := BattleRng.new(seed_value)
-	var overrides := {side_id: {"formation": form, "order": order, "auto_cast": auto},
-			enemy_id: {"ai": enemy_ai == "on", "auto_cast": enemy_ai == "auto"}}
+	var overrides := {side_id: {"formation": form, "order": order, "auto_cast": auto and not extra.cast_ai,
+					"ai": auto and extra.cast_ai, "dodge": extra.dodge, "gcharge": extra.gcharge},
+			enemy_id: {"ai": enemy_ai == "on", "auto_cast": enemy_ai == "auto",
+					"dodge": extra.enemy_dodge, "gcharge": extra.enemy_gcharge}}
 	var wins := 0
 	var total_time := 0.0
 	var surv := 0
@@ -74,6 +97,8 @@ func _run_combo(cfg: Dictionary, side_id: String, enemy_id: String, form: String
 	var gen_hp := 0.0
 	var has_general := false
 	var e_casts := 0
+	var p_casts := 0
+	var splits := 0
 	for i in runs:
 		var sim := BattleSim.new(cfg, overrides, rng)
 		sim.record_events = false
@@ -81,6 +106,8 @@ func _run_combo(cfg: Dictionary, side_id: String, enemy_id: String, form: String
 			sim.step(dt)
 		var c := sim.count()
 		e_casts += sim.get_side(enemy_id).casts
+		p_casts += sim.get_side(side_id).casts
+		splits += sim.get_side(side_id).splits
 		var g = sim.general_of(side_id)
 		has_general = g != null
 		if sim.over == side_id:
@@ -100,6 +127,8 @@ func _run_combo(cfg: Dictionary, side_id: String, enemy_id: String, form: String
 		"surv_enemy": float(enemy_left) / (runs - wins) if runs > wins else 0.0,
 		# player's general HP left, averaged over wins
 		"e_cast": float(e_casts) / runs,
+		"p_cast": float(p_casts) / runs,
+		"splits": float(splits) / runs,
 		"gen_hp": ("%d%%" % roundi(gen_hp / wins * 100.0)) if has_general and wins > 0 else "-",
 	}
 

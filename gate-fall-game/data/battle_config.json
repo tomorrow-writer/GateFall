@@ -1,5 +1,5 @@
 {
-  "_about": "Battle tuning for BattleSim.gd. Troop values come from prototype/battle_core.js; generals are new (start: ~6x a soldier, tune with tools/run_sims.gd). Times are seconds, distances are field pixels (480x240).",
+  "_about": "Battle tuning for BattleSim.gd. Started from prototype/battle_core.js; HP x1.6 for longer battles with 2-4 specials each, slime atk raised so line/charge mirror matches are ~50/50 with both sides on BattleAI. Tune with tools/run_sims.gd. Times are seconds, distances are field pixels (480x240).",
 
   "sim": {
     "steps_per_second": 15,
@@ -28,13 +28,27 @@
     "anim_jitter": 6,
     "swing_time": 0.25,
     "hit_flash": 0.15,
-    "separation_min_d2": 0.0001
+    "separation_min_d2": 0.0001,
+    "_special_take_note": "true = specials are reduced by the target's order/formation damage-taken multipliers (hold, square), like normal hits.",
+    "special_take_mult": true
   },
+
+  "_lanes_note": "The field height (y_min..y_max) splits into this many equal lanes, top to bottom. Lane specials hit one lane; the target side dodges by opening it (split).",
+  "lanes": { "count": 3, "labels": ["บน", "กลาง", "ล่าง"] },
+
+  "_commands_note": "switch_delay = s the troops stand frozen after an order change (the price of reacting).",
+  "commands": { "switch_delay": 0.4 },
+
+  "_split_note": "Open a lane: troops in it step out to the neighbouring lane at speed_mult x their speed, nobody enters it for duration s, everyone hits crowd_atk x while it is open. margin = px around the lane that also counts as inside.",
+  "split": { "label": "แยกเลน", "duration": 2.5, "speed_mult": 2.5, "crowd_atk": 0.95, "margin": 2 },
+
+  "_general_charge_note": "General fights at the front: +mp_on_hit MP per hit it lands, specials launch from where it stands; takes channel_take x damage while channelling a special at the front; walks back at return_spd_mult x speed when recalled.",
+  "general_charge": { "label": "แม่ทัพลงสนาม", "mp_on_hit": 8, "channel_take": 1.25, "return_spd_mult": 0.8 },
 
   "units": {
     "slime_big": {
       "kind": "big",
-      "hp": 30, "atk": 5, "cd": 1.0, "spd": 28,
+      "hp": 48, "atk": 6.75, "cd": 1.0, "spd": 28,
       "reach": 25, "radius": 11,
       "split": {
         "into": "slime_mini",
@@ -56,19 +70,19 @@
     },
     "knight": {
       "kind": "knight",
-      "hp": 40, "atk": 7, "cd": 1.1, "spd": 24,
+      "hp": 64, "atk": 7, "cd": 1.1, "spd": 24,
       "reach": 25, "radius": 10
     },
     "_generals_note": "Generals, starting point from run_sims: slime general 6x hp / 3x atk of a big slime; knight general 5x hp / ~2.6x atk of a knight (6x/3x made slimes win only 5-20%). A bit slower than troops. engage_range = fights enemies this close; follow_gap = hangs this far behind its troops.",
     "general_slime": {
       "kind": "general", "role": "general",
-      "hp": 180, "atk": 15, "cd": 1.0, "spd": 24,
+      "hp": 288, "atk": 15, "cd": 1.0, "spd": 24,
       "reach": 28, "radius": 14,
       "engage_range": 70, "follow_gap": 45
     },
     "general_knight": {
       "kind": "general", "role": "general",
-      "hp": 200, "atk": 18, "cd": 1.1, "spd": 20,
+      "hp": 320, "atk": 18, "cd": 1.1, "spd": 20,
       "reach": 28, "radius": 14,
       "engage_range": 70, "follow_gap": 45
     }
@@ -78,7 +92,8 @@
   "orders": {
     "charge":  { "label": "บุก", "atk_mult": 1.15, "take_mult": 1,    "mp_regen": 4 },
     "hold":    { "label": "ตั้งรับ", "atk_mult": 1,    "take_mult": 0.85, "mp_regen": 4.5, "hold_range": 70 },
-    "advance": { "label": "เดินหน้า", "atk_mult": 1,    "take_mult": 1,    "mp_regen": 4 }
+    "advance": { "label": "เดินหน้า", "atk_mult": 1,    "take_mult": 1,    "mp_regen": 4 },
+    "retreat": { "label": "ถอย",    "atk_mult": 1,    "take_mult": 1,    "mp_regen": 3, "retreat": true, "spd_mult": 1.2 }
   },
 
   "_formations_note": "Spots are for an army facing right (left side of the field); a side facing left mirrors x as width - x. flank = extra atk when flank_min or more allies hit the same target. Roles toward generals: general_pull (<1 = enemy general counts as closer when picking targets, applied to squared distance), envelop (px troops swing above/below the enemy general), leash (px troops stay within of their own general).",
@@ -109,42 +124,46 @@
     }
   },
 
-  "_specials_note": "All specials sweep from the caster's edge (start_x) to end_x at speed, a band width px deep, hitting each enemy once. lane_height 0 = full field height; > 0 = a lane that tall, aimed by the caster (AI or best lane for the player). knockback = px survivors are pushed back. type/color are for BattleView.",
+  "_specials_note": "Casting pays MP, then telegraph s of warning (target lane shown, general stands still), then the special launches launch_offset px in front of the general (start_x without a general) and sweeps toward the enemy at speed, a band width px deep, hitting each enemy once. lanes 0 = full field height; 1 = one lane aimed by the caster (AI, or best lane for the player). range = px travelled before it fades; damage drops to min_damage_pct % at the end (no range = full damage to end_x). knockback = px survivors are pushed back. type/color are for BattleView.",
   "specials": {
     "emerald_slime_wave": {
       "label": "คลื่นสไลม์มรกต",
       "type": "wave",
       "color": "73ff8c",
-      "mp_cost": 70,
-      "damage": 3,
+      "mp_cost": 60,
+      "damage": 10,
+      "lanes": 0,
+      "telegraph": 1.75,
+      "launch_offset": 12,
+      "range": 300,
+      "min_damage_pct": 40,
       "start_x": 30,
-      "speed": 340,
+      "speed": 300,
       "width": 40,
       "end_x": 520,
       "hit_flash": 0.3,
-      "auto_cast_after": 3,
-      "cutscene_time": 0.9
+      "auto_cast_after": 3
     },
-    "_cavalry_note": "Knight general. run_sims 300/combo vs enemy AI (slime player, special on): line charge 46%, square charge 65%. mp_cost 85 = about one charge per battle; damage 10 / mp 70 dropped slime line-charge to 24%.",
     "cavalry_charge": {
       "label": "ทัพม้าบุกทะลวง",
       "type": "charge",
       "color": "f0c060",
-      "mp_cost": 85,
-      "damage": 7,
-      "lane_height": 44,
+      "mp_cost": 65,
+      "damage": 20,
+      "lanes": 1,
+      "telegraph": 1.75,
+      "launch_offset": 12,
       "knockback": 14,
       "start_x": 0,
       "speed": 300,
       "width": 30,
       "end_x": 520,
       "hit_flash": 0.3,
-      "auto_cast_after": 3,
-      "cutscene_time": 0.9
+      "auto_cast_after": 3
     }
   },
 
-  "_ai_note": "BattleAI (enemy side), see scripts/battle/BattleAI.gd. Every think_interval s: hit value per enemy = share of max HP taken + kill_bonus if it dies, general x general_weight. Cast when the best lane holds min_share of the value of hitting every enemy; full MP lowers it to full_mp_min_share; own general below danger_hp with enemies within danger_range: any hit, those enemies x danger_weight.",
+  "_ai_note": "BattleAI, see scripts/battle/BattleAI.gd (same brain for either side). Casting: every think_interval s, hit value per enemy = share of max HP taken + kill_bonus if it dies, general x general_weight; cast when the best lane holds min_share of the value of hitting every enemy; full MP lowers it to full_mp_min_share; own general below danger_hp with enemies within danger_range: any hit, those enemies x danger_weight. Dodging: reaction_time s after an enemy cast, chance dodge_skill: open the lane if it holds dodge_min_units (general = general_weight); full-field special -> full_response order until it passes. General charge: after charge_after s, go in at HP >= charge_hp with troop HP >= charge_adv x enemy's; come back at HP < return_hp or troop HP < return_adv x.",
   "ai": {
     "think_interval": 0.5,
     "min_share": 0.35,
@@ -154,7 +173,15 @@
     "danger_hp": 0.5,
     "danger_range": 70,
     "danger_weight": 3,
-    "lane_step": 6
+    "reaction_time": 0.6,
+    "dodge_skill": 0.85,
+    "dodge_min_units": 3,
+    "full_response": "hold",
+    "charge_after": 4,
+    "charge_hp": 0.7,
+    "charge_adv": 1.1,
+    "return_hp": 0.4,
+    "return_adv": 0.7
   },
 
   "_sides_note": "Side order matters: units spawn interleaved in this order, and if both armies die on the same step the first side wins (prototype behaviour).",
@@ -184,7 +211,7 @@
       "facing": -1,
       "spawn_jitter": [4, 4],
       "formation": "line",
-      "order": "advance",
+      "order": "charge",
       "special": "cavalry_charge",
       "general": "general_knight",
       "general_spot": [40, 176],

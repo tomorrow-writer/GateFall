@@ -1,6 +1,10 @@
 ## Draws a BattleSim with placeholder shapes and plays effects from its events.
 ## Read-only: never changes the sim, so what you see is what run_sims measures.
 ## Swap the _draw_* functions for sprites later without touching BattleSim.
+##
+## Reads the sim's command state every frame: a special's warning time lights
+## up its target lane (red when it is coming at the player), an opened lane is
+## striped in the player's colour, a general sent in gets a red ring.
 extends Node2D
 
 const BattleSim = preload("res://scripts/battle/BattleSim.gd")
@@ -15,6 +19,9 @@ const FLASH := Color(1, 1, 1)
 const WAVE := Color(0.45, 1.0, 0.55)
 const HP_BG := Color(0, 0, 0, 0.6)
 const HP_FG := Color("e0e05a")
+const DANGER := Color("ff4a3a")
+const OPEN_LANE := Color("6ad0ff")
+const CHARGE_RING := Color("ff6a4a")
 
 var sim: BattleSim
 ## 0..1 between the previous sim step and the current one (smooth 60 fps on a 15 Hz sim).
@@ -27,9 +34,8 @@ var _fx: Array = []  # {kind, pos, t0, dur}
 var _clock := 0.0
 var _flash := 0.0  # full-screen flash when a special is cast
 var _flash_col := WAVE
-var _cutscene := 0.0  # remaining cutscene time
-var _cutscene_len := 0.0
-var _cutscene_side = null  # Army whose general is casting
+## Side the player commands: enemy warnings are drawn red, own ones in the special's colour.
+var player_side := ""
 
 
 func bind(s: BattleSim) -> void:
@@ -38,7 +44,6 @@ func bind(s: BattleSim) -> void:
 	_died_at.clear()
 	_born_at.clear()
 	_fx.clear()
-	_cutscene = 0.0
 	capture_prev()
 	queue_redraw()
 
@@ -65,15 +70,11 @@ func handle_events(events: Array) -> void:
 			"spawn":
 				_born_at[e.id] = _clock
 			"cast":
-				_flash = 0.25
+				_flash = 0.12
 				_flash_col = _special_color(sim.get_side(e.side))
-
-
-## s: the casting Army (either side; the AI's casts get a cutscene too).
-func start_cutscene(duration: float, s) -> void:
-	_cutscene = duration
-	_cutscene_len = duration
-	_cutscene_side = s
+			"launch":
+				_flash = 0.2
+				_flash_col = _special_color(sim.get_side(e.side))
 
 
 ## Special's "color" from the config, light green if unset.
@@ -86,7 +87,6 @@ func _special_color(s) -> Color:
 func _process(delta: float) -> void:
 	_clock += delta
 	_flash = maxf(0.0, _flash - delta)
-	_cutscene = maxf(0.0, _cutscene - delta)
 	var keep: Array = []
 	for f in _fx:
 		if _clock - f.t0 < f.dur:
@@ -99,6 +99,10 @@ func _draw() -> void:
 	_draw_field()
 	if sim == null:
 		return
+	_draw_lanes()
+	for s in sim.sides:
+		if not s.pending.is_empty():
+			_draw_warning(s)
 	# Wave behind the units (a cavalry charge rides over them, drawn below)
 	for s in sim.sides:
 		if not s.wave.is_empty() and s.special.get("type", "wave") != "charge":
@@ -117,10 +121,9 @@ func _draw() -> void:
 	for f in _fx:
 		_draw_fx(f)
 	_draw_general_bars()
+	_draw_banners()
 	if _flash > 0.0:
-		draw_rect(Rect2(0, 0, 480, 270), Color(_flash_col.lerp(Color.WHITE, 0.4), _flash * 1.6))
-	if _cutscene > 0.0:
-		_draw_cutscene()
+		draw_rect(Rect2(0, 0, 480, 270), Color(_flash_col.lerp(Color.WHITE, 0.4), _flash * 1.2))
 
 
 func _pos(u) -> Vector2:
@@ -160,10 +163,18 @@ func _draw_wave(s) -> void:
 	if sp.get("type", "wave") == "charge":
 		_draw_charge(s, x0, x1, col)
 		return
-	draw_rect(Rect2(x0, 112, x1 - x0, 126), Color(col, 0.35))
-	for i in 7:
-		var cy := 120.0 + i * 18.0
-		draw_circle(Vector2(lerpf(x0, x1, 0.7) + sin(_clock * 20.0 + i) * 3.0, cy), 7.0, Color(col, 0.7))
+	# fades as it runs out of range (weaker damage)
+	var fade := 1.0
+	if float(sp.get("range", 0)) > 0.0:
+		var k := clampf((float(w.x) - float(w.x0)) / float(sp.range), 0.0, 1.0)
+		fade = lerpf(1.0, maxf(0.25, float(sp.get("min_damage_pct", 100)) / 100.0), k)
+	var top := maxf(112.0, float(w.y0))
+	var bot := minf(238.0, float(w.y1))
+	draw_rect(Rect2(x0, top, x1 - x0, bot - top), Color(col, 0.35 * fade))
+	var n := int((bot - top) / 18.0)
+	for i in n:
+		var cy := top + 8.0 + i * 18.0
+		draw_circle(Vector2(lerpf(x0, x1, 0.7) + sin(_clock * 20.0 + i) * 3.0, cy), 7.0, Color(col, 0.7 * fade))
 
 
 ## Cavalry charge: a row of placeholder horsemen galloping down the lane,
@@ -171,8 +182,8 @@ func _draw_wave(s) -> void:
 func _draw_charge(s, x0: float, x1: float, col: Color) -> void:
 	var w: Dictionary = s.wave
 	var f := float(s.facing)
-	var half := float(s.special.get("lane_height", 40)) / 2.0
-	var ly := float(w.y)
+	var half := (float(w.y1) - float(w.y0)) / 2.0
+	var ly := (float(w.y0) + float(w.y1)) / 2.0
 	var front := x1 if f > 0.0 else x0
 	var back := -40.0 if f > 0.0 else 520.0
 	# lane marker + dust trail
@@ -289,8 +300,18 @@ func _draw_general(u, p: Vector2, fade: float, flash: bool) -> void:
 	if not u.alive:
 		draw_rect(Rect2(b + Vector2(-13, -7), Vector2(26, 7)), Color(armour.darkened(0.4), fade))
 		return
-	# aura ring so the general is easy to find
-	draw_arc(b + Vector2(0, -1), 13.0, 0, TAU, 20, Color(trim, 0.5), 1.0)
+	# aura ring so the general is easy to find; red when sent into the fight,
+	# pulsing glow while channelling a special
+	var s = u.side
+	if not s.pending.is_empty():
+		var col := _special_color(s)
+		draw_circle(b + Vector2(0, -20), 16.0 + sin(_clock * 16.0) * 3.0, Color(col, 0.25))
+		draw_arc(b + Vector2(0, -1), 15.0, 0, TAU * (1.0 - float(s.pending.t) / maxf(0.001, float(s.pending.total))),
+				24, Color(col, 0.9), 2.0)
+	if s.gen_charge:
+		draw_arc(b + Vector2(0, -1), 13.0, 0, TAU, 20, Color(CHARGE_RING, 0.85), 1.5)
+	else:
+		draw_arc(b + Vector2(0, -1), 13.0, 0, TAU, 20, Color(trim, 0.5), 1.0)
 	draw_colored_polygon(PackedVector2Array([b + Vector2(-f * 3 - 5, -30), b + Vector2(-f * 3 + 5, -30),
 			b + Vector2(-f * 3 + 8, -4), b + Vector2(-f * 3 - 9, -4)]), cape)
 	draw_rect(Rect2(b + Vector2(-6, -30), Vector2(12, 22)), armour)
@@ -357,34 +378,86 @@ func _draw_fx(f: Dictionary) -> void:
 			draw_arc(f.pos, 3.0 + k * 9.0, 0, TAU, 12, Color(1, 1, 1, 0.8 * (1.0 - k)), 1.0)
 
 
-## Placeholder cutscene: the casting general slides in from its own edge,
-## scaled up, with the special's name on the other side.
-func _draw_cutscene() -> void:
-	var k := 1.0 - _cutscene / maxf(_cutscene_len, 0.001)  # 0 -> 1
-	draw_rect(Rect2(0, 0, 480, 270), Color(0, 0, 0, 0.55))
-	# letterbox bars slide in
-	var bar := 30.0 * minf(k * 4.0, 1.0)
-	draw_rect(Rect2(0, 0, 480, bar), Color(0, 0, 0))
-	draw_rect(Rect2(0, 270 - bar, 480, bar), Color(0, 0, 0))
-	var s = _cutscene_side
-	if s == null:
+## Faint lane guides while fighting; an opened lane is striped in the player's
+## colour (enemy's opened lane faintly) with the time it stays open.
+func _draw_lanes() -> void:
+	var n: int = sim.lane_count()
+	if n <= 0 or sim.time <= 0.0:
 		return
-	var col := _special_color(s)
+	for i in range(1, n):
+		var y: float = sim.lane_bounds(i).x
+		var x := 0.0
+		while x < 480.0:
+			draw_line(Vector2(x, y), Vector2(x + 6.0, y), Color(1, 1, 1, 0.10), 1.0)
+			x += 12.0
+	for s in sim.sides:
+		if s.split_lane < 0:
+			continue
+		var b: Vector2 = sim.lane_bounds(s.split_lane)
+		var mine: bool = s.id == player_side
+		var col := OPEN_LANE if mine else Color(0.8, 0.8, 0.8)
+		var a := 0.16 if mine else 0.07
+		draw_rect(Rect2(0, b.x, 480, b.y - b.x), Color(col, a))
+		# chevrons pointing out of the lane, on this side's half
+		var f := float(s.facing)
+		var x0 := 20.0 if f > 0.0 else 300.0
+		for k in 4:
+			var cx := x0 + k * 40.0
+			draw_line(Vector2(cx - 4, b.x + 6), Vector2(cx, b.x + 2), Color(col, a * 4.0), 1.0)
+			draw_line(Vector2(cx + 4, b.x + 6), Vector2(cx, b.x + 2), Color(col, a * 4.0), 1.0)
+			draw_line(Vector2(cx - 4, b.y - 6), Vector2(cx, b.y - 2), Color(col, a * 4.0), 1.0)
+			draw_line(Vector2(cx + 4, b.y - 6), Vector2(cx, b.y - 2), Color(col, a * 4.0), 1.0)
+		if mine:
+			var font := ThemeDB.fallback_font
+			draw_string(font, Vector2(4 if f > 0.0 else 420, b.x + (b.y - b.x) / 2.0 + 3),
+					"เปิด %.1f" % maxf(0.0, s.split_left), HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color(col, 0.9))
+
+
+## A special in its warning time: the lane it will run down blinks, with an
+## arrow showing which way it comes and a bar for the time left.
+func _draw_warning(s) -> void:
+	var p: Dictionary = s.pending
+	var enemy: bool = s.id != player_side
+	var col := DANGER if enemy else _special_color(s)
+	var top := maxf(108.0, float(p.y0))
+	var bot := minf(240.0, float(p.y1))
+	var k := 1.0 - float(p.t) / maxf(0.001, float(p.total))  # 0 -> 1
+	var blink := 0.5 + 0.5 * sin(_clock * (10.0 + k * 14.0))
+	draw_rect(Rect2(0, top, 480, bot - top), Color(col, 0.16 + 0.16 * blink))
+	draw_line(Vector2(0, top), Vector2(480, top), Color(col, 0.7), 1.0)
+	draw_line(Vector2(0, bot), Vector2(480, bot), Color(col, 0.7), 1.0)
+	# arrows in the direction of travel
 	var f := float(s.facing)
-	var slide := minf(k * 3.0, 1.0)
-	var gx := lerpf(-40.0, 150.0, slide) if f > 0.0 else lerpf(520.0, 330.0, slide)
-	var g := Vector2(gx, 200)
-	var glow := 14.0 + sin(_clock * 18.0) * 3.0 + k * 10.0
-	draw_circle(g + Vector2(0, -50), glow * 2.0, Color(col, 0.18))
-	var gen = sim.general_of(s.id)
-	if gen != null:
-		draw_set_transform(g, 0.0, Vector2(2.4, 2.4))
-		_draw_general(gen, Vector2.ZERO, 1.0, false)
-		draw_set_transform(Vector2.ZERO)
-	# title on the far side from the general
-	var label: String = s.special.get("label", "")
+	var mid := (top + bot) / 2.0
+	for i in 5:
+		var ax := fposmod(i * 100.0 + _clock * 60.0 * f, 500.0) - 10.0
+		draw_line(Vector2(ax, mid - 6), Vector2(ax + f * 8, mid), Color(col, 0.6), 2.0)
+		draw_line(Vector2(ax, mid + 6), Vector2(ax + f * 8, mid), Color(col, 0.6), 2.0)
+	# time left: bar shrinking along the lane edge
+	draw_rect(Rect2(0, top, 480.0 * (1.0 - k), 2), Color(col, 0.9))
+
+
+## Top banners: special name and countdown while it warms up.
+func _draw_banners() -> void:
 	var font := ThemeDB.fallback_font
-	var size := 16
-	var tw := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x
-	var tx := 470.0 - tw if f > 0.0 else 10.0
-	draw_string(font, Vector2(tx, 120), label, HORIZONTAL_ALIGNMENT_LEFT, -1, size, col)
+	var row := 0
+	for s in sim.sides:
+		if s.pending.is_empty():
+			continue
+		var enemy: bool = s.id != player_side
+		var col := DANGER if enemy else _special_color(s)
+		var lane_name := ""
+		var lane := int(s.pending.lane)
+		var labels: Array = sim.cfg.get("lanes", {}).get("labels", [])
+		if lane >= 0 and lane < labels.size():
+			lane_name = " · เลน" + str(labels[lane])
+		elif lane < 0:
+			lane_name = " · ทั้งสนาม"
+		var text := "%s%s%s  %.1f" % ["! " if enemy else "", s.special.get("label", ""), lane_name,
+				maxf(0.0, float(s.pending.t))]
+		var size := 11
+		var tw := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x
+		var y := 52.0 + row * 16.0
+		draw_rect(Rect2(240.0 - tw / 2.0 - 6.0, y - 11.0, tw + 12.0, 15.0), Color(0, 0, 0, 0.6))
+		draw_string(font, Vector2(240.0 - tw / 2.0, y), text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, col)
+		row += 1
