@@ -5,6 +5,8 @@
 ## Reads the sim's command state every frame: a special's warning time lights
 ## up its target lane (red when it is coming at the player), an opened lane is
 ## striped in the player's colour, a general sent in gets a red ring.
+## Casting a special plays a cut-in band across the middle of the screen
+## (_draw_cutin); the field itself is never dimmed or flashed as a whole.
 ## Sprites: units listed in the config "sprites" section are drawn from
 ## sprite strips (see _load_sprites); anything without one falls back to the
 ## placeholder shapes below, so art can be added one unit at a time.
@@ -41,7 +43,8 @@ var _hurt_at := {}  # unit id -> view clock when it was last hit (troop HP bars 
 const HURT_BAR_TIME := 1.2
 var _fx: Array = []  # {kind, pos, t0, dur}
 var _clock := 0.0
-var _flash := 0.0  # full-screen flash when a special is cast
+var _flash := 0.0  # full-screen flash (duel only: specials use the cut-in band)
+var _cutin_at := {}  # side id -> view clock when its general started a special
 var _flash_col := WAVE
 ## Side the player commands: enemy warnings are drawn red, own ones in the special's colour.
 var player_side := ""
@@ -87,6 +90,7 @@ func bind(s: BattleSim) -> void:
 	_fx.clear()
 	_duel_t0 = -1.0
 	_duel_nums.clear()
+	_cutin_at.clear()
 	_cam_ready = false
 	capture_prev()
 	_update_camera(0.0)
@@ -150,12 +154,9 @@ func handle_events(events: Array) -> void:
 			"spawn":
 				_born_at[e.id] = _clock
 			"cast":
-				_flash = 0.12
-				_flash_col = _special_color(sim.get_side(e.side))
+				_cutin_at[e.side] = _clock
 			"launch":
 				var ls = sim.get_side(e.side)
-				_flash = 0.2
-				_flash_col = _special_color(ls)
 				var launch_id := _special_fx(ls, "launch")
 				var g = sim.general_of(e.side)
 				if launch_id != "" and g != null:
@@ -281,6 +282,7 @@ func _draw() -> void:
 	_draw_lane_timer()
 	_draw_banners()
 	_draw_radar()
+	_draw_cutin()
 	if sim.phase == "offer":
 		draw_rect(Rect2(Vector2.ZERO, SCREEN), Color(0, 0, 0, 0.45))
 	if _flash > 0.0:
@@ -394,7 +396,6 @@ func _draw_wave_sprites(s, id: String, x0: float, x1: float, top: float, bot: fl
 	# fade in over the first 30 px so it rises out of the launch splash instead
 	# of popping up on top of the general
 	fade *= clampf((float(s.wave.x) - float(s.wave.x0)) / 30.0, 0.0, 1.0)
-	draw_rect(Rect2(x0, top, x1 - x0, bot - top), Color(col, 0.10 * fade))
 	for i in sim.lane_count():
 		var b: Vector2 = sim.lane_bounds(i)
 		if b.y <= top or b.x >= bot:
@@ -663,8 +664,10 @@ func _draw_lane_timer() -> void:
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color(OPEN_LANE, 0.9))
 
 
-## A special in its warning time: the lane it will run down blinks, with an
-## arrow showing which way it comes and a bar for the time left.
+## A special in its warning time: thin blinking edges round the lane it will
+## run down (a single lane also gets a faint tint; a full-field special only
+## its edges, so the ground is never washed over), arrows showing which way it
+## comes and a bar for the time left.
 func _draw_warning(s) -> void:
 	var p: Dictionary = s.pending
 	var enemy: bool = s.id != player_side
@@ -673,16 +676,18 @@ func _draw_warning(s) -> void:
 	var bot := minf(240.0, float(p.y1))
 	var k := 1.0 - float(p.t) / maxf(0.001, float(p.total))  # 0 -> 1
 	var blink := 0.5 + 0.5 * sin(_clock * (10.0 + k * 14.0))
-	draw_rect(Rect2(0, top, 480, bot - top), Color(col, 0.16 + 0.16 * blink))
-	draw_line(Vector2(0, top), Vector2(480, top), Color(col, 0.7), 1.0)
-	draw_line(Vector2(0, bot), Vector2(480, bot), Color(col, 0.7), 1.0)
+	if int(p.get("lane", -1)) >= 0:
+		draw_rect(Rect2(0, top, 480, bot - top), Color(col, 0.06))
+	var edge := Color(col, 0.35 + 0.5 * blink)
+	draw_line(Vector2(0, top), Vector2(480, top), edge, 1.0)
+	draw_line(Vector2(0, bot), Vector2(480, bot), edge, 1.0)
 	# arrows in the direction of travel
 	var f := float(s.facing)
 	var mid := (top + bot) / 2.0
 	for i in 5:
 		var ax := fposmod(i * 100.0 + _clock * 60.0 * f, 500.0) - 10.0
-		draw_line(Vector2(ax, mid - 6), Vector2(ax + f * 8, mid), Color(col, 0.6), 2.0)
-		draw_line(Vector2(ax, mid + 6), Vector2(ax + f * 8, mid), Color(col, 0.6), 2.0)
+		draw_line(Vector2(ax, mid - 5), Vector2(ax + f * 7, mid), Color(col, 0.45), 1.0)
+		draw_line(Vector2(ax, mid + 5), Vector2(ax + f * 7, mid), Color(col, 0.45), 1.0)
 	# time left: bar shrinking along the lane edge
 	draw_rect(Rect2(0, top, 480.0 * (1.0 - k), 2), Color(col, 0.9))
 
@@ -692,7 +697,7 @@ func _draw_banners() -> void:
 	var font := ThemeDB.fallback_font
 	var row := 0
 	for s in sim.sides:
-		if s.pending.is_empty():
+		if s.pending.is_empty() or _cutin_age(s) < CUTIN_TIME:
 			continue
 		var enemy: bool = s.id != player_side
 		var col := DANGER if enemy else _special_color(s)
@@ -712,6 +717,118 @@ func _draw_banners() -> void:
 		draw_rect(Rect2(cx - tw / 2.0 - 5.0, y - 10.0, tw + 10.0, 13.0), Color(0, 0, 0, 0.6))
 		draw_string(font, Vector2(cx - tw / 2.0, y), text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, col)
 		row += 1
+
+
+# --- special cut-in ------------------------------------------------------------
+# When a general starts a special, a band slides across the middle of the
+# screen with the general's cast pose (x2, chest up), the special's name and
+# speed lines, like the web prototype. Only the band is drawn: the field round
+# it is left as it is. It plays inside the warning time, so the sim never waits
+# for it and balance is unchanged. The caster's side picks the direction: from
+# the left for the side facing right; the enemy's cut-in has red edges and a
+# warning label. Two at once: the newer one shows.
+
+const CUTIN_MID := 88.0  # band centre (screen px), between the top and bottom HUD
+const CUTIN_H := 60.0
+const CUTIN_IN := 0.16
+const CUTIN_HOLD := 0.75
+const CUTIN_OUT := 0.16
+const CUTIN_TIME := CUTIN_IN + CUTIN_HOLD + CUTIN_OUT
+const CUTIN_SCALE := 2.0
+const CUTIN_GOLD := Color("e8c070")
+
+
+## Seconds since side s started its special (INF = no cut-in running).
+func _cutin_age(s) -> float:
+	if s == null or not _cutin_at.has(s.id) or s.pending.is_empty():
+		return INF
+	return _clock - float(_cutin_at[s.id])
+
+
+func _draw_cutin() -> void:
+	if sim.phase == "duel":
+		return
+	var s = null
+	var t := INF
+	for sd in sim.sides:
+		var a := _cutin_age(sd)
+		if a < CUTIN_TIME and a < t:
+			s = sd
+			t = a
+	if s == null:
+		return
+	var enemy: bool = s.id != player_side
+	var f := float(s.facing)  # +1: slides in from the left
+	var col := _special_color(s)
+	var k_in := clampf(t / CUTIN_IN, 0.0, 1.0)
+	var k_out := clampf((t - CUTIN_IN - CUTIN_HOLD) / CUTIN_OUT, 0.0, 1.0)
+	var open := (1.0 - pow(1.0 - k_in, 3.0)) * (1.0 - k_out * k_out)
+	var h := roundf(CUTIN_H * open)
+	if h < 2.0:
+		return
+	var top := roundf(CUTIN_MID - h / 2.0)
+	var band := Rect2(0, top, SCREEN.x, h)
+	# band: dark shade of the special's colour, brighter stripe through the middle
+	draw_rect(band, Color(col.darkened(0.82), 0.92))
+	draw_rect(Rect2(0, top + h * 0.3, SCREEN.x, h * 0.4), Color(col.darkened(0.7), 0.5))
+	var edge := DANGER if enemy else CUTIN_GOLD
+	draw_rect(Rect2(0, top - 1, SCREEN.x, 1), edge)
+	draw_rect(Rect2(0, top + h, SCREEN.x, 1), edge)
+	# speed lines streaming against the slide
+	for i in 12:
+		var ly := top + 3.0 + fposmod(i * 23.7, maxf(1.0, h - 6.0))
+		var ln := 14.0 + fposmod(i * 17.3, 26.0)
+		var lx := fposmod(i * 61.0 - t * 520.0 * f, SCREEN.x + 60.0) - 30.0
+		draw_rect(Rect2(roundf(lx), roundf(ly), ln, 1), Color(1, 1, 1, 0.10 + 0.06 * (i % 3)))
+	# the general, chest up: top rows of its cast frame, x2, sliding in
+	var slide := (1.0 - pow(1.0 - k_in, 3.0)) * 70.0 - 70.0 - k_out * 30.0
+	var g = sim.general_of(s.id)
+	var drew_general := false
+	if g != null and _sprites.has(g.type_id):
+		var sp: Dictionary = _sprites[g.type_id]
+		var a: Dictionary = sp.anims.get("cast", sp.anims.idle)
+		var i := int(t * float(a.fps) * 1.5) % int(a.frames)
+		var w: float = sp.w
+		var rows := floorf(h / CUTIN_SCALE)
+		var gx := 6.0 + slide  # frame's left edge, distance from the caster's screen edge
+		var origin := Vector2(gx if f > 0.0 else SCREEN.x - gx, top)
+		draw_set_transform(cam.round() + origin, 0.0, Vector2(CUTIN_SCALE * f, CUTIN_SCALE))
+		draw_texture_rect_region(a.tex, Rect2(0, 0, w, rows), Rect2(i * w, 0, w, rows), Color(1, 1, 1, open))
+		draw_set_transform(cam.round())
+		drew_general = true
+	# sparks drifting off the staff / blade toward the name
+	for j in 6:
+		var u := fposmod(t * 1.6 + j * 0.17, 1.0)
+		var sx := 70.0 + u * 120.0 + slide
+		var sy := top + h * (0.25 + 0.5 * fposmod(j * 0.37, 1.0)) - u * 6.0
+		if sy > top + 1.0 and sy < top + h - 2.0:
+			var px := sx if f > 0.0 else SCREEN.x - sx
+			draw_rect(Rect2(roundf(px), roundf(sy), 2, 2), Color(col.lightened(0.3), (1.0 - u) * open))
+	# name: on the far side from the general, sliding the other way
+	if h < 30.0:
+		return
+	var font := ThemeDB.fallback_font
+	var small := "! ศัตรูใช้ท่าพิเศษ" if enemy else "ท่าพิเศษของแม่ทัพ"
+	var title := str(s.special.get("label", ""))
+	var big := 16
+	var tw := font.get_string_size(title, HORIZONTAL_ALIGNMENT_LEFT, -1, big).x
+	var sw := font.get_string_size(small, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
+	var tslide := -slide * 0.6  # slides in from the far edge
+	var tx := SCREEN.x - 12.0 - tw + tslide  # name on the right (cut-in from the left)
+	var sx2 := tx + tw - sw
+	if not drew_general:
+		tx = (SCREEN.x - tw) / 2.0
+		sx2 = (SCREEN.x - sw) / 2.0
+	elif f < 0.0:
+		tx = 12.0 - tslide  # name on the left
+		sx2 = tx
+	var ty := roundf(CUTIN_MID + 8.0)
+	draw_string(font, Vector2(roundf(sx2), ty - 19.0), small, HORIZONTAL_ALIGNMENT_LEFT, -1, 10,
+			Color(DANGER.lightened(0.3) if enemy else CUTIN_GOLD, open))
+	draw_string_outline(font, Vector2(roundf(tx), ty), title, HORIZONTAL_ALIGNMENT_LEFT, -1, big, 3,
+			Color(col.darkened(0.85), open))
+	draw_string(font, Vector2(roundf(tx), ty), title, HORIZONTAL_ALIGNMENT_LEFT, -1, big,
+			Color(Color.WHITE.lerp(col, 0.15), open))
 
 
 func _other_side(id: String) -> String:
