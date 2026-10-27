@@ -9,6 +9,10 @@
 ##     (same key again closes it); clicking a lane on the field does the same
 ##   G = send the general in / call it back
 ##   Space = special, Enter = start / again
+##   Tab / right-click / click the order box = command menu: the battle pauses
+##     while it is open (like DF's command window) and it closes on any command
+## HUD (BattleHud.gd) in the DF layout: general HP at the top corners, clock in
+## the middle, both sides' MP along the bottom, current order between them.
 ## When both armies are gone the battle stops and asks: duel (Enter) or pull
 ## the general out (3, the battle is lost but the general survives). The duel
 ## itself plays out on its own; the player watches.
@@ -31,10 +35,8 @@ const ORDER_KEYS := {"charge": "1", "hold": "2", "retreat": "3"}
 const LANE_KEYS := ["Q", "A", "Z"]
 
 @onready var view = $View
-@onready var mp_label: Label = %MpLabel
-@onready var mp_bar: ProgressBar = %MpBar
-@onready var count_label: Label = %CountLabel
-@onready var time_label: Label = %TimeLabel
+@onready var hud = %DfHud
+@onready var command_menu: Control = %CommandMenu
 @onready var charge_btn: Button = %ChargeButton
 @onready var hold_btn: Button = %HoldButton
 @onready var retreat_btn: Button = %RetreatButton
@@ -68,6 +70,8 @@ var _enemy_side := ""
 var _formation_buttons := {}
 var _order_buttons := {}
 var _lane_buttons: Array[Button] = []
+## Command menu open: the sim does not step (DF's pausing command window).
+var menu_open := false
 
 
 func _ready() -> void:
@@ -131,13 +135,15 @@ func _ready() -> void:
 		_formation_buttons[key] = b
 
 	view.player_side = player_side
+	hud.view = view
+	hud.player_side = player_side
 	_back_to_setup()
 
 
 func _process(delta: float) -> void:
 	if sim == null:
 		return
-	if phase == "fight":
+	if phase == "fight" and not menu_open:
 		_acc += delta
 		while _acc >= _dt and phase == "fight":
 			_acc -= _dt
@@ -146,20 +152,33 @@ func _process(delta: float) -> void:
 			view.handle_events(events)
 			for e in events:
 				if e.type == "over":
+					_close_menu()
 					duel_panel.hide()
 					_show_result(e.winner)
 				elif e.type == "duel_offer":
+					_close_menu()
 					_show_duel_offer()
 				elif e.type == "duel_start":
 					duel_panel.hide()
 		view.alpha = clampf(_acc / _dt, 0.0, 1.0)
-	else:
+	elif phase != "fight":
 		view.alpha = 1.0
 	_update_hud()
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT:
+		_toggle_menu()
+		get_viewport().set_input_as_handled()
+		return
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		# The order box at the bottom of the HUD opens the command menu.
+		if hud.ORDER_BOX.has_point(hud.get_local_mouse_position()):
+			_toggle_menu()
+			get_viewport().set_input_as_handled()
+			return
+		if menu_open:
+			return
 		# Click a lane on the field to open it.
 		if phase == "fight" and sim != null and sim.lane_count() > 0:
 			var p: Vector2 = view.get_local_mouse_position()  # field coords (camera applied)
@@ -176,6 +195,12 @@ func _unhandled_input(event: InputEvent) -> void:
 				_duel_choice("duel")
 			KEY_3, KEY_ESCAPE:
 				_duel_choice("retreat")
+		return
+	if event.keycode == KEY_TAB:
+		_toggle_menu()
+		return
+	if event.keycode == KEY_ESCAPE and menu_open:
+		_close_menu()
 		return
 	match event.keycode:
 		KEY_1:
@@ -231,6 +256,7 @@ func _new_sim() -> void:
 			_enemy_side: {"ai": true}}
 	sim = BattleSim.new(cfg, overrides, BattleRng.new(_seed))
 	view.bind(sim)
+	hud.sim = sim
 
 
 func _start_fight() -> void:
@@ -305,12 +331,14 @@ func _set_order(name: String) -> void:
 		_order_buttons[name].button_pressed = true
 	if sim != null:
 		sim.set_order(player_side, name)
+	_close_menu()
 
 
 func _split(lane: int) -> void:
 	if phase != "fight" or sim == null or lane < 0:
 		return
 	sim.split(player_side, lane)
+	_close_menu()
 
 
 func _toggle_general() -> void:
@@ -318,12 +346,29 @@ func _toggle_general() -> void:
 		return
 	var s := sim.get_side(player_side)
 	sim.set_general_charge(player_side, not s.gen_charge)
+	_close_menu()
 
 
 func _cast_special() -> void:
 	if phase != "fight" or sim == null:
 		return
 	sim.cast(player_side)
+	_close_menu()
+
+
+## Command menu: open before the fight (starting order) or while the troops
+## fight on the field; not during a duel offer, the duel or the result.
+func _toggle_menu() -> void:
+	if menu_open:
+		_close_menu()
+		return
+	if sim == null or phase == "over" or sim.phase != "field":
+		return
+	menu_open = true
+
+
+func _close_menu() -> void:
+	menu_open = false
 
 
 # --- HUD ---------------------------------------------------------------------
@@ -333,14 +378,10 @@ func _update_hud() -> void:
 		return
 	var s := sim.get_side(player_side)
 	var has_special := not s.special.is_empty()
-	mp_bar.max_value = s.mp_max
-	mp_bar.value = s.mp
-	mp_label.text = "พลังเวท %d" % int(s.mp)
-	mp_bar.visible = has_special
-	mp_label.visible = has_special
-	count_label.text = "%s %d   %s %d" % [_side_label(player_side), sim.troop_count(player_side),
-			_side_label(_enemy_side), sim.troop_count(_enemy_side)]
-	time_label.text = "%d วิ" % int(sim.time)
+	hud.menu_open = menu_open
+	command_menu.visible = menu_open
+	if phase == "setup":
+		setup_panel.visible = not menu_open
 	special_btn.visible = has_special
 	if has_special:
 		var cost := float(s.special.mp_cost)
@@ -350,9 +391,6 @@ func _update_hud() -> void:
 		duel_btn.text = "ดวล [Enter] %d" % ceili(maxf(0.0, float(sim.duel.offer_left)))
 	elif duel_btn.text != "ดวล [Enter]":
 		duel_btn.text = "ดวล [Enter]"
-	# The duel close-up gets the whole screen.
-	$Hud/Root/TopBar.visible = sim.phase != "duel"
-	$Hud/Root/BottomBar.visible = sim.phase != "duel"
 	var field := phase == "fight" and sim.phase == "field"
 	for b in _order_buttons.values():
 		b.disabled = not field and phase != "setup"
