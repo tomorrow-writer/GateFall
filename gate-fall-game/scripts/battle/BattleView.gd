@@ -540,7 +540,7 @@ func _draw_unit(u) -> void:
 	var flash: bool = u.fx > 0.0
 	if u.is_general:
 		_draw_general_marks(u, p)
-	if not _draw_sprite(u, p, fade, flash, 1.0):
+	if not _draw_sprite(u, p, fade, flash, 1.0, true):
 		match u.kind:
 			"big", "mini":
 				_draw_slime(u, p, fade, flash)
@@ -552,7 +552,7 @@ func _draw_unit(u) -> void:
 		var w := 14.0 if u.kind != "mini" else 9.0
 		var bar_y := -26.0 if u.kind == "knight" else (-20.0 if u.kind == "big" else -14.0)
 		if _sprites.has(u.type_id):
-			bar_y = -float(_sprites[u.type_id].height) - 2.0
+			bar_y = -float(_field_sprite(u.type_id).height) - 2.0
 		var top := p + Vector2(-w / 2.0, bar_y)
 		draw_rect(Rect2(top, Vector2(w, 2)), HP_BG)
 		draw_rect(Rect2(top, Vector2(w * clampf(u.hp / u.max_hp, 0.0, 1.0), 2)), HP_FG)
@@ -1038,22 +1038,43 @@ func _load_sprites() -> void:
 		if str(id).begins_with("_"):
 			continue
 		var d: Dictionary = defs[id]
-		var fw := int(d.frame[0])
-		var fh := int(d.frame[1])
-		var anims := {}
-		for a in d.get("anims", {}):
-			var ad: Dictionary = d.anims[a]
-			var path := "%s/%s.png" % [d.dir, a]
-			if not ResourceLoader.exists(path):
-				continue
-			var tex: Texture2D = load(path)
-			var n := int(ad.get("frames", maxi(1, tex.get_width() / fw)))
-			anims[a] = {"tex": tex, "frames": n, "fps": float(ad.get("fps", 6)), "loop": bool(ad.get("loop", true))}
-		if not anims.has("idle"):
+		var sp := _load_sprite_set(d, d)
+		if sp.is_empty():
 			continue
-		var foot: Array = d.get("foot", [fw / 2, fh - 1])
-		_sprites[id] = {"anims": anims, "w": fw, "h": fh, "foot": Vector2(foot[0], foot[1]),
-				"height": float(d.get("height", fh))}
+		# Optional battlefield-size strips (generals): drawn at troop scale on the
+		# field, while the full-size set stays for the duel and the cut-in.
+		if d.has("field"):
+			var fsp := _load_sprite_set(d.field, d)
+			if not fsp.is_empty():
+				sp["field"] = fsp
+		_sprites[id] = sp
+
+
+## One sprite set from d (dir/frame/foot/height); the anims list comes from base.
+## Empty if it has no idle strip.
+func _load_sprite_set(d: Dictionary, base: Dictionary) -> Dictionary:
+	var fw := int(d.frame[0])
+	var fh := int(d.frame[1])
+	var anims := {}
+	for a in base.get("anims", {}):
+		var ad: Dictionary = base.anims[a]
+		var path := "%s/%s.png" % [d.dir, a]
+		if not ResourceLoader.exists(path):
+			continue
+		var tex: Texture2D = load(path)
+		var n := int(ad.get("frames", maxi(1, tex.get_width() / fw)))
+		anims[a] = {"tex": tex, "frames": n, "fps": float(ad.get("fps", 6)), "loop": bool(ad.get("loop", true))}
+	if not anims.has("idle"):
+		return {}
+	var foot: Array = d.get("foot", [fw / 2, fh - 1])
+	return {"anims": anims, "w": fw, "h": fh, "foot": Vector2(foot[0], foot[1]),
+			"height": float(d.get("height", fh))}
+
+
+## The sprite set u is drawn with on the battlefield (field-size if it has one).
+func _field_sprite(type_id: String) -> Dictionary:
+	var sp: Dictionary = _sprites[type_id]
+	return sp.field if sp.has("field") else sp
 
 
 # Config "fx_sprites": { "<effect id>": {
@@ -1123,10 +1144,11 @@ func _anim_of(u) -> String:
 
 
 ## Draws u from its sprite strip with its feet at p. False = no sprite.
-func _draw_sprite(u, p: Vector2, fade: float, flash: bool, scale: float) -> bool:
+## on_field: use the unit's battlefield-size strips if it has them (generals).
+func _draw_sprite(u, p: Vector2, fade: float, flash: bool, scale: float, on_field := false) -> bool:
 	if not _sprites.has(u.type_id):
 		return false
-	var sp: Dictionary = _sprites[u.type_id]
+	var sp: Dictionary = _field_sprite(u.type_id) if on_field else _sprites[u.type_id]
 	var name := _anim_of(u)
 	if not sp.anims.has(name):
 		if name == "die":
