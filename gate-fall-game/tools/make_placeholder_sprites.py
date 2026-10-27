@@ -98,7 +98,14 @@ def general(dr, ox, slime_gen, bob=0, swing=0, cast=0, dead=0):
         dr.line([hx, hy, tip[0], tip[1]], fill=(240, 240, 255, 255), width=2)
 
 
+# Units that already have real art: never overwrite them with placeholders.
+REAL_ART = {"general_slime", "general_knight", "slime_big", "slime_mini", "knight"}
+
+
 def make_unit(unit, w, h, draw_fn, troop=False):
+    if unit in REAL_ART:
+        print("skip", unit, "(real art)")
+        return
     anims = {
         "idle": [dict(bob=0), dict(bob=1)],
         "walk": [dict(bob=0), dict(bob=1), dict(bob=0), dict(bob=1)],
