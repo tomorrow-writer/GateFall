@@ -10,6 +10,7 @@
 ##   G = send the general in / call it back
 ##   4 / 5 / 6 = the general's small / medium / large special,
 ##   Space = the largest special ready now, Enter = start / again
+##   F2 = HD light on/off (bloom, grading, vignette: shaders/hd_post.gdshader)
 ##   Tab / right-click / click the order box = command menu: the battle pauses
 ##     while it is open (like DF's command window) and it closes on any command
 ## HUD (BattleHud.gd) in the DF layout: general HP at the top corners, clock in
@@ -204,6 +205,9 @@ func _unhandled_input(event: InputEvent) -> void:
 				_duel_choice("duel")
 			KEY_3, KEY_ESCAPE:
 				_duel_choice("retreat")
+		return
+	if event.keycode == KEY_F2:
+		%PostFx.visible = not %PostFx.visible
 		return
 	if event.keycode == KEY_TAB:
 		_toggle_menu()

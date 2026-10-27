@@ -57,14 +57,19 @@ var _bg_path := ""
 var _facing := {}  # unit id -> -1/+1, which way it is drawn facing (see _update_facing)
 var _duel_bg: Texture2D = null  # field.duel_background (null = drawn placeholder)
 var _duel_bg_path := ""
+var _ground: Sprite2D = null  # field image with depth of field (_sync_ground)
+const FIELD_DOF := preload("res://shaders/field_dof.gdshader")
 
 # --- camera (DF style) -----------------------------------------------------------
 # The screen (320x180) is smaller than the field (480 wide, ground y 104-240), so
 # the view is a window onto the field, like Dragon Force: close enough that the
 # troops read big, the ground fills the screen, and the camera follows the clash.
-# The camera only moves this node (whole pixels, no scaling), so sprites stay
-# crisp and the sim never knows. Things drawn in screen space (HP bars, banners,
-# radar, flashes) go through _screen_begin()/_screen_end().
+# The camera only moves this node (no scaling), so the sim never knows. The game
+# draws at the window's full resolution (stretch mode canvas_items): sprites are
+# pixel art scaled x4/x6 with nearest filtering so they stay crisp, while the
+# camera glides in sub-pixel steps and text/lines/light are smooth (HD look).
+# Things drawn in screen space (HP bars, banners, radar, flashes) go through
+# _screen_begin()/_screen_end().
 const SCREEN := Vector2(320, 180)
 ## World y at the top of the screen: horizon (y 104) sits under the top HUD,
 ## the dark strip under the field (y 240+) under the bottom HUD.
@@ -240,6 +245,7 @@ func _camera_goal() -> float:
 func _update_camera(delta: float) -> void:
 	if sim == null:
 		return
+	_sync_ground()
 	if sim.phase == "duel":
 		position = Vector2.ZERO  # the duel close-up is drawn in screen space
 		return
@@ -250,12 +256,12 @@ func _update_camera(delta: float) -> void:
 	else:
 		cam.x = lerpf(cam.x, goal, 1.0 - exp(-CAM_FOLLOW * delta))
 	cam.y = CAM_Y
-	position = -cam.round()
+	position = -cam
 
 
 ## Draw in screen pixels (0..SCREEN) while the node is offset by the camera.
 func _screen_begin() -> void:
-	draw_set_transform(cam.round())
+	draw_set_transform(cam)
 
 
 func _screen_end() -> void:
@@ -341,17 +347,39 @@ func _pos(u) -> Vector2:
 	return p.lerp(cur, alpha)
 
 
-func _draw_field() -> void:
-	# Painted background (480x270: horizon at y 104, ground to y 240, HUD strip below).
+## Ground image (480x270: horizon at y 104, ground to y 240, HUD strip below) on
+## a child sprite behind this node's drawing, with field_dof.gdshader: sharp
+## across the lanes, soft toward the horizon and the bottom edge. Hidden in the
+## duel (drawn in screen space) and when there is no image (placeholder below).
+func _sync_ground() -> void:
 	var path := ""
 	if sim != null:
 		path = str(sim.cfg.field.get("background", ""))
 	if path != _bg_path:
 		_bg_path = path
 		_bg = load(path) as Texture2D if path != "" and ResourceLoader.exists(path) else null
+	if _ground == null:
+		_ground = Sprite2D.new()
+		_ground.name = "Ground"
+		_ground.centered = false
+		_ground.show_behind_parent = true
+		var mat := ShaderMaterial.new()
+		mat.shader = FIELD_DOF
+		_ground.material = mat
+		add_child(_ground)
+	if _ground.texture != _bg:
+		_ground.texture = _bg
+		var m := _ground.material as ShaderMaterial
+		m.set_shader_parameter("tex_sharp", _bg)
+		m.set_shader_parameter("tex_soft", _bg)
+	_ground.visible = _bg != null and (sim == null or sim.phase != "duel")
 	if _bg != null:
-		draw_texture_rect(_bg, Rect2(0, 0, 480, 270), false)
-		return
+		_ground.scale = Vector2(480.0, 270.0) / Vector2(_bg.get_size())
+
+
+func _draw_field() -> void:
+	if _bg != null:
+		return  # drawn by the Ground sprite (_sync_ground)
 	# Placeholder: sky (top band, behind the HUD)
 	var sky_top := Color("1d2a48")
 	var sky_low := Color("d98c5a")
@@ -696,7 +724,7 @@ func _draw_lane_timer() -> void:
 	var text := "เปิด %.1f" % maxf(0.0, s.split_left)
 	var tw := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, 8).x
 	var x := 4.0 if s.facing > 0 else SCREEN.x - 4.0 - tw
-	draw_string(font, Vector2(x, b.x + (b.y - b.x) / 2.0 + 3.0 - cam.round().y), text,
+	draw_string(font, Vector2(x, b.x + (b.y - b.x) / 2.0 + 3.0 - cam.y), text,
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color(OPEN_LANE, 0.9))
 
 
@@ -848,9 +876,9 @@ func _draw_cutin() -> void:
 		var rows := floorf(h / CUTIN_SCALE)
 		var gx := 6.0 + slide  # frame's left edge, distance from the caster's screen edge
 		var origin := Vector2(gx if f > 0.0 else SCREEN.x - gx, top)
-		draw_set_transform(cam.round() + origin, 0.0, Vector2(CUTIN_SCALE * f, CUTIN_SCALE))
+		draw_set_transform(cam + origin, 0.0, Vector2(CUTIN_SCALE * f, CUTIN_SCALE))
 		draw_texture_rect_region(a.tex, Rect2(0, 0, w, rows), Rect2(i * w, 0, w, rows), Color(1, 1, 1, open))
-		draw_set_transform(cam.round())
+		draw_set_transform(cam)
 		drew_general = true
 	# sparks drifting off the staff / blade toward the name
 	for j in 6:
