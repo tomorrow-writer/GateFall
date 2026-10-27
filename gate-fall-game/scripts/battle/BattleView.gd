@@ -267,6 +267,10 @@ func _draw_charge(s, x0: float, x1: float, col: Color) -> void:
 	draw_line(Vector2(0, ly + half), Vector2(480, ly + half), Color(col, 0.45), 1.0)
 	var tx0 := minf(front, back)
 	draw_rect(Rect2(tx0, ly - half, absf(front - back), half * 2.0), Color(0.75, 0.62, 0.45, 0.18))
+	var rider_id := _special_fx(s, "rider")
+	if rider_id != "":
+		_draw_charge_sprites(s, rider_id, _special_fx(s, "trail"), front, ly, half)
+		return
 	for i in 6:
 		var dx := front - f * (14.0 + i * 11.0)
 		draw_circle(Vector2(dx, ly - half + fmod(i * 17.0, half * 2.0) + 4.0), 5.0 + i, Color(0.8, 0.7, 0.55, 0.3 - i * 0.04))
@@ -279,6 +283,27 @@ func _draw_charge(s, x0: float, x1: float, col: Color) -> void:
 		draw_set_transform(Vector2(x, y - gallop), 0.0, Vector2(1.4, 1.4))
 		_draw_horseman(Vector2.ZERO, f, col)
 		draw_set_transform(Vector2.ZERO)
+
+
+## Cavalry charge from sprites: two ranks of riders (front rank on the charge
+## front, second rank CHARGE_RANK_GAP px behind), two riders per rank staggered
+## across the lane, dust clouds rolling behind each rank. The rider sprite's foot
+## is its lance tip on the ground line, so the lances lead the hit band.
+const CHARGE_RANK_GAP := 34.0
+
+func _draw_charge_sprites(s, rider_id: String, trail_id: String, front: float, ly: float, half: float) -> void:
+	var f := float(s.facing)
+	var rows := 2
+	var ranks := 2
+	# back to front so nearer riders overlap the ones behind them
+	for r in range(ranks - 1, -1, -1):
+		for i in rows:
+			var y := ly - half + (i + 0.5) * (half * 2.0 / rows) + 6.0
+			var x := front - f * (8.0 + (i % 2) * 7.0 + r * CHARGE_RANK_GAP)
+			var t := _clock + i * 0.17 + r * 0.29  # out of step, like real riders
+			if trail_id != "":
+				_draw_fx_sprite(trail_id, t, Vector2(x - f * 52.0, y), f, Color(1, 1, 1, 0.85))
+			_draw_fx_sprite(rider_id, t, Vector2(x, y), f, Color(1, 1, 1, 1))
 
 
 func _draw_horseman(p: Vector2, f: float, col: Color) -> void:

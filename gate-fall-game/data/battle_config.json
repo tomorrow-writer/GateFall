@@ -165,7 +165,8 @@
       "width": 30,
       "end_x": 520,
       "hit_flash": 0.3,
-      "auto_cast_after": 3
+      "auto_cast_after": 3,
+      "fx": { "rider": "cavalry_rider", "trail": "cavalry_dust", "hit": "cavalry_impact" }
     }
   },
 
@@ -201,11 +202,14 @@
     "general_knight": { "dir": "res://assets/units/general_knight", "frame": [76, 48], "foot": [26, 46], "height": 46, "anims": { "idle": {"frames": 2, "fps": 3}, "walk": {"frames": 4, "fps": 8}, "attack": {"frames": 3, "fps": 12, "loop": false}, "cast": {"frames": 2, "fps": 4}, "die": {"frames": 3, "fps": 6, "loop": false} } }
   },
 
-  "_fx_sprites_note": "Effect strips for specials (BattleView). file = one strip, frames left to right, moving RIGHT (flipped for the side facing left). foot = frame pixel put on the effect's point: wave = crest front on the wave front, base on each lane's bottom edge; hit = centre of the struck unit; launch = the launch point in front of the general. A special lists its effects in \"fx\" (wave / hit / launch); anything missing is drawn with the placeholder shapes.",
+  "_fx_sprites_note": "Effect strips for specials (BattleView). file = one strip, frames left to right, moving RIGHT (flipped for the side facing left). foot = frame pixel put on the effect's point: wave = crest front on the wave front, base on each lane's bottom edge; hit = centre of the struck unit; launch = the launch point in front of the general. A special lists its effects in \"fx\": wave / hit / launch for a wave, rider / trail / hit for a charge (rider foot = lance tip on the ground line); anything missing is drawn with the placeholder shapes.",
   "fx_sprites": {
     "slime_wave": { "file": "res://assets/fx/slime_wave.png", "frame": [60, 48], "foot": [58, 47], "frames": 4, "fps": 12, "loop": true },
     "slime_splash": { "file": "res://assets/fx/slime_splash.png", "frame": [24, 24], "foot": [12, 13], "frames": 4, "fps": 16, "loop": false },
-    "slime_launch": { "file": "res://assets/fx/slime_launch.png", "frame": [52, 48], "foot": [8, 47], "frames": 3, "fps": 10, "loop": false }
+    "slime_launch": { "file": "res://assets/fx/slime_launch.png", "frame": [52, 48], "foot": [8, 47], "frames": 3, "fps": 10, "loop": false },
+    "cavalry_rider": { "file": "res://assets/fx/cavalry_rider.png", "frame": [66, 44], "foot": [64, 43], "frames": 4, "fps": 12, "loop": true },
+    "cavalry_dust": { "file": "res://assets/fx/cavalry_dust.png", "frame": [40, 22], "foot": [20, 21], "frames": 4, "fps": 10, "loop": true },
+    "cavalry_impact": { "file": "res://assets/fx/cavalry_impact.png", "frame": [26, 26], "foot": [13, 13], "frames": 4, "fps": 16, "loop": false }
   },
 
   "_sides_note": "Side order matters: units spawn interleaved in this order, and if both armies die on the same step the first side wins (prototype behaviour).",
