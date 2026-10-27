@@ -1,6 +1,15 @@
 ## Draws a BattleSim with placeholder shapes and plays effects from its events.
 ## Read-only: never changes the sim, so what you see is what run_sims measures.
 ## Swap the _draw_* functions for sprites later without touching BattleSim.
+##
+## Reads the sim's command state every frame: a special's warning time lights
+## up its target lane (red when it is coming at the player), an opened lane is
+## striped in the player's colour, a general sent in gets a red ring.
+## Sprites: units listed in the config "sprites" section are drawn from
+## sprite strips (see _load_sprites); anything without one falls back to the
+## placeholder shapes below, so art can be added one unit at a time.
+## When the sim reaches its duel phase the view cuts to a close-up of the two
+## generals trading blows (_draw_duel), with damage numbers from duel_hit.
 extends Node2D
 
 const BattleSim = preload("res://scripts/battle/BattleSim.gd")
@@ -15,6 +24,9 @@ const FLASH := Color(1, 1, 1)
 const WAVE := Color(0.45, 1.0, 0.55)
 const HP_BG := Color(0, 0, 0, 0.6)
 const HP_FG := Color("e0e05a")
+const DANGER := Color("ff4a3a")
+const OPEN_LANE := Color("6ad0ff")
+const CHARGE_RING := Color("ff6a4a")
 
 var sim: BattleSim
 ## 0..1 between the previous sim step and the current one (smooth 60 fps on a 15 Hz sim).
@@ -26,18 +38,23 @@ var _born_at := {}  # unit id -> view clock when it split off
 var _fx: Array = []  # {kind, pos, t0, dur}
 var _clock := 0.0
 var _flash := 0.0  # full-screen flash when a special is cast
-var _cutscene := 0.0  # remaining cutscene time
-var _cutscene_len := 0.0
-var _cutscene_label := ""
+var _flash_col := WAVE
+## Side the player commands: enemy warnings are drawn red, own ones in the special's colour.
+var player_side := ""
+var _sprites := {}  # unit type id -> {"anims": {name: {tex, frames, fps, loop}}, "foot": Vector2, "height"}
+var _duel_t0 := -1.0  # view clock when the duel started
+var _duel_nums: Array = []  # {side (target), text, t0, col}
 
 
 func bind(s: BattleSim) -> void:
 	sim = s
+	_load_sprites()
 	_prev.clear()
 	_died_at.clear()
 	_born_at.clear()
 	_fx.clear()
-	_cutscene = 0.0
+	_duel_t0 = -1.0
+	_duel_nums.clear()
 	capture_prev()
 	queue_redraw()
 
@@ -56,26 +73,49 @@ func handle_events(events: Array) -> void:
 			"hit":
 				_fx.append({"kind": "spark", "pos": Vector2(e.x, e.y - 8), "t0": _clock, "dur": 0.2})
 			"wavehit":
-				_fx.append({"kind": "burst", "pos": Vector2(e.x, e.y - 8), "t0": _clock, "dur": 0.4})
+				_fx.append({"kind": "burst", "pos": Vector2(e.x, e.y - 8), "t0": _clock, "dur": 0.4,
+						"col": _special_color(sim.get_side(e.get("by", "")))})
 			"die":
 				_died_at[e.id] = _clock
 				_fx.append({"kind": "poof", "pos": Vector2(e.x, e.y - 6), "t0": _clock, "dur": 0.35})
 			"spawn":
 				_born_at[e.id] = _clock
 			"cast":
-				_flash = 0.25
+				_flash = 0.12
+				_flash_col = _special_color(sim.get_side(e.side))
+			"launch":
+				_flash = 0.2
+				_flash_col = _special_color(sim.get_side(e.side))
+			"duel_offer":
+				_flash = 0.3
+				_flash_col = Color(1, 1, 1)
+			"duel_start":
+				_duel_t0 = _clock
+				_flash = 0.35
+				_flash_col = Color(1, 0.9, 0.6)
+			"duel_hit":
+				var target := _other_side(e.side)
+				if e.miss:
+					_duel_nums.append({"side": target, "text": "พลาด", "t0": _clock, "col": Color(0.8, 0.8, 0.85)})
+				else:
+					var big: bool = e.dmg >= 30.0
+					_duel_nums.append({"side": target, "text": "-%d" % roundi(e.dmg), "t0": _clock,
+							"col": Color("ffdd55") if big else Color(1, 1, 1), "big": big})
+					if big:
+						_flash = 0.12
+						_flash_col = Color(1, 1, 1)
 
 
-func start_cutscene(duration: float, label: String) -> void:
-	_cutscene = duration
-	_cutscene_len = duration
-	_cutscene_label = label
+## Special's "color" from the config, light green if unset.
+func _special_color(s) -> Color:
+	if s == null or s.special.is_empty():
+		return WAVE
+	return Color(str(s.special.get("color", "73ff8c")))
 
 
 func _process(delta: float) -> void:
 	_clock += delta
 	_flash = maxf(0.0, _flash - delta)
-	_cutscene = maxf(0.0, _cutscene - delta)
 	var keep: Array = []
 	for f in _fx:
 		if _clock - f.t0 < f.dur:
@@ -88,9 +128,18 @@ func _draw() -> void:
 	_draw_field()
 	if sim == null:
 		return
-	# Wave behind the units
+	if sim.phase == "duel":
+		_draw_duel()
+		if _flash > 0.0:
+			draw_rect(Rect2(0, 0, 480, 270), Color(_flash_col, _flash * 1.5))
+		return
+	_draw_lanes()
 	for s in sim.sides:
-		if not s.wave.is_empty():
+		if not s.pending.is_empty():
+			_draw_warning(s)
+	# Wave behind the units (a cavalry charge rides over them, drawn below)
+	for s in sim.sides:
+		if not s.wave.is_empty() and s.special.get("type", "wave") != "charge":
 			_draw_wave(s)
 	# Units back to front
 	var order: Array = []
@@ -100,13 +149,17 @@ func _draw() -> void:
 	order.sort_custom(func(a, b): return a.y < b.y)
 	for u in order:
 		_draw_unit(u)
+	for s in sim.sides:
+		if not s.wave.is_empty() and s.special.get("type", "wave") == "charge":
+			_draw_wave(s)
 	for f in _fx:
 		_draw_fx(f)
 	_draw_general_bars()
+	_draw_banners()
+	if sim.phase == "offer":
+		draw_rect(Rect2(0, 0, 480, 270), Color(0, 0, 0, 0.45))
 	if _flash > 0.0:
-		draw_rect(Rect2(0, 0, 480, 270), Color(0.6, 1.0, 0.6, _flash * 1.6))
-	if _cutscene > 0.0:
-		_draw_cutscene()
+		draw_rect(Rect2(0, 0, 480, 270), Color(_flash_col.lerp(Color.WHITE, 0.4), _flash * 1.2))
 
 
 func _pos(u) -> Vector2:
@@ -142,10 +195,62 @@ func _draw_wave(s) -> void:
 		var t := 480.0 - x0
 		x0 = 480.0 - x1
 		x1 = t
-	draw_rect(Rect2(x0, 112, x1 - x0, 126), Color(WAVE, 0.35))
-	for i in 7:
-		var cy := 120.0 + i * 18.0
-		draw_circle(Vector2(lerpf(x0, x1, 0.7) + sin(_clock * 20.0 + i) * 3.0, cy), 7.0, Color(WAVE, 0.7))
+	var col := _special_color(s)
+	if sp.get("type", "wave") == "charge":
+		_draw_charge(s, x0, x1, col)
+		return
+	# fades as it runs out of range (weaker damage)
+	var fade := 1.0
+	if float(sp.get("range", 0)) > 0.0:
+		var k := clampf((float(w.x) - float(w.x0)) / float(sp.range), 0.0, 1.0)
+		fade = lerpf(1.0, maxf(0.25, float(sp.get("min_damage_pct", 100)) / 100.0), k)
+	var top := maxf(112.0, float(w.y0))
+	var bot := minf(238.0, float(w.y1))
+	draw_rect(Rect2(x0, top, x1 - x0, bot - top), Color(col, 0.35 * fade))
+	var n := int((bot - top) / 18.0)
+	for i in n:
+		var cy := top + 8.0 + i * 18.0
+		draw_circle(Vector2(lerpf(x0, x1, 0.7) + sin(_clock * 20.0 + i) * 3.0, cy), 7.0, Color(col, 0.7 * fade))
+
+
+## Cavalry charge: a row of placeholder horsemen galloping down the lane,
+## dust behind them, the lane itself faintly marked.
+func _draw_charge(s, x0: float, x1: float, col: Color) -> void:
+	var w: Dictionary = s.wave
+	var f := float(s.facing)
+	var half := (float(w.y1) - float(w.y0)) / 2.0
+	var ly := (float(w.y0) + float(w.y1)) / 2.0
+	var front := x1 if f > 0.0 else x0
+	var back := -40.0 if f > 0.0 else 520.0
+	# lane marker + dust trail
+	draw_rect(Rect2(0, ly - half, 480, half * 2.0), Color(col, 0.10))
+	draw_line(Vector2(0, ly - half), Vector2(480, ly - half), Color(col, 0.45), 1.0)
+	draw_line(Vector2(0, ly + half), Vector2(480, ly + half), Color(col, 0.45), 1.0)
+	var tx0 := minf(front, back)
+	draw_rect(Rect2(tx0, ly - half, absf(front - back), half * 2.0), Color(0.75, 0.62, 0.45, 0.18))
+	for i in 6:
+		var dx := front - f * (14.0 + i * 11.0)
+		draw_circle(Vector2(dx, ly - half + fmod(i * 17.0, half * 2.0) + 4.0), 5.0 + i, Color(0.8, 0.7, 0.55, 0.3 - i * 0.04))
+	# horsemen, rows staggered so the line reads as a charge
+	var rows := maxi(2, int(half * 2.0 / 15.0))
+	for i in rows:
+		var y := ly - half + (i + 0.5) * (half * 2.0 / rows) + 6.0
+		var x := front - f * (8.0 + (i % 2) * 7.0)
+		var gallop := absf(sin(_clock * 22.0 + i)) * 2.0
+		draw_set_transform(Vector2(x, y - gallop), 0.0, Vector2(1.4, 1.4))
+		_draw_horseman(Vector2.ZERO, f, col)
+		draw_set_transform(Vector2.ZERO)
+
+
+func _draw_horseman(p: Vector2, f: float, col: Color) -> void:
+	var horse := Color("6b4a32")
+	draw_rect(Rect2(p + Vector2(-8, -9), Vector2(16, 6)), horse)  # body
+	draw_rect(Rect2(p + Vector2(f * 6 - 2, -13), Vector2(5, 6)), horse)  # neck/head
+	draw_rect(Rect2(p + Vector2(-7, -3), Vector2(2, 3)), horse.darkened(0.3))  # legs
+	draw_rect(Rect2(p + Vector2(5, -3), Vector2(2, 3)), horse.darkened(0.3))
+	draw_rect(Rect2(p + Vector2(-3, -17), Vector2(6, 8)), KNIGHT)  # rider
+	draw_rect(Rect2(p + Vector2(-1, -19), Vector2(2, 2)), PLUME)
+	draw_line(p + Vector2(f * 2, -13), p + Vector2(f * 16, -15), col, 1.0)  # lance
 
 
 func _draw_unit(u) -> void:
@@ -153,16 +258,22 @@ func _draw_unit(u) -> void:
 	var dead_t: float = _clock - _died_at.get(u.id, _clock)
 	var fade := 1.0 if u.alive else clampf(1.0 - dead_t / 0.6, 0.0, 1.0)
 	var flash: bool = u.fx > 0.0
-	match u.kind:
-		"big", "mini":
-			_draw_slime(u, p, fade, flash)
-		"general":
-			_draw_general(u, p, fade, flash)
-		_:
-			_draw_knight(u, p, fade, flash)
+	if u.is_general:
+		_draw_general_marks(u, p)
+	if not _draw_sprite(u, p, fade, flash, 1.0):
+		match u.kind:
+			"big", "mini":
+				_draw_slime(u, p, fade, flash)
+			"general":
+				_draw_general(u, p, fade, flash)
+			_:
+				_draw_knight(u, p, fade, flash)
 	if u.alive and u.hp < u.max_hp and not u.is_general:
 		var w := 14.0 if u.kind != "mini" else 9.0
-		var top := p + Vector2(-w / 2.0, -26.0 if u.kind == "knight" else (-20.0 if u.kind == "big" else -14.0))
+		var bar_y := -26.0 if u.kind == "knight" else (-20.0 if u.kind == "big" else -14.0)
+		if _sprites.has(u.type_id):
+			bar_y = -float(_sprites[u.type_id].height) - 2.0
+		var top := p + Vector2(-w / 2.0, bar_y)
 		draw_rect(Rect2(top, Vector2(w, 2)), HP_BG)
 		draw_rect(Rect2(top, Vector2(w * clampf(u.hp / u.max_hp, 0.0, 1.0), 2)), HP_FG)
 
@@ -218,6 +329,23 @@ func _draw_knight(u, p: Vector2, fade: float, flash: bool) -> void:
 
 ## Placeholder generals: slime general (green armour, red cape, orb staff) and
 ## knight general (gold-trimmed armour, blue cape). Both clearly bigger than troops.
+## Aura ring so the general is easy to find; red when sent into the fight,
+## pulsing glow while channelling a special. Drawn under sprite or placeholder.
+func _draw_general_marks(u, b: Vector2) -> void:
+	if not u.alive:
+		return
+	var s = u.side
+	if not s.pending.is_empty():
+		var col := _special_color(s)
+		draw_circle(b + Vector2(0, -20), 16.0 + sin(_clock * 16.0) * 3.0, Color(col, 0.25))
+		draw_arc(b + Vector2(0, -1), 15.0, 0, TAU * (1.0 - float(s.pending.t) / maxf(0.001, float(s.pending.total))),
+				24, Color(col, 0.9), 2.0)
+	if s.gen_charge:
+		draw_arc(b + Vector2(0, -1), 13.0, 0, TAU, 20, Color(CHARGE_RING, 0.85), 1.5)
+	else:
+		draw_arc(b + Vector2(0, -1), 13.0, 0, TAU, 20, Color(Color("d8b440"), 0.5), 1.0)
+
+
 func _draw_general(u, p: Vector2, fade: float, flash: bool) -> void:
 	var f: float = float(u.side.facing)
 	var bob := absf(sin(u.anim * 6.0)) * 1.5 if u.walking else 0.0
@@ -231,8 +359,6 @@ func _draw_general(u, p: Vector2, fade: float, flash: bool) -> void:
 	if not u.alive:
 		draw_rect(Rect2(b + Vector2(-13, -7), Vector2(26, 7)), Color(armour.darkened(0.4), fade))
 		return
-	# aura ring so the general is easy to find
-	draw_arc(b + Vector2(0, -1), 13.0, 0, TAU, 20, Color(trim, 0.5), 1.0)
 	draw_colored_polygon(PackedVector2Array([b + Vector2(-f * 3 - 5, -30), b + Vector2(-f * 3 + 5, -30),
 			b + Vector2(-f * 3 + 8, -4), b + Vector2(-f * 3 - 9, -4)]), cape)
 	draw_rect(Rect2(b + Vector2(-6, -30), Vector2(12, 22)), armour)
@@ -294,31 +420,271 @@ func _draw_fx(f: Dictionary) -> void:
 		"spark":
 			draw_circle(f.pos, 2.0 + k * 2.0, Color(1, 0.95, 0.6, 1.0 - k))
 		"burst":
-			draw_arc(f.pos, 4.0 + k * 10.0, 0, TAU, 16, Color(WAVE, 1.0 - k), 2.0)
+			draw_arc(f.pos, 4.0 + k * 10.0, 0, TAU, 16, Color(f.get("col", WAVE), 1.0 - k), 2.0)
 		"poof":
 			draw_arc(f.pos, 3.0 + k * 9.0, 0, TAU, 12, Color(1, 1, 1, 0.8 * (1.0 - k)), 1.0)
 
 
-func _draw_cutscene() -> void:
-	var k := 1.0 - _cutscene / maxf(_cutscene_len, 0.001)  # 0 -> 1
-	draw_rect(Rect2(0, 0, 480, 270), Color(0, 0, 0, 0.55))
-	# letterbox bars slide in
-	var bar := 30.0 * minf(k * 4.0, 1.0)
-	draw_rect(Rect2(0, 0, 480, bar), Color(0, 0, 0))
-	draw_rect(Rect2(0, 270 - bar, 480, bar), Color(0, 0, 0))
-	# placeholder general: big slime-orb staff and cape
-	var gx := lerpf(-40.0, 150.0, minf(k * 3.0, 1.0))
-	var g := Vector2(gx, 170)
-	draw_colored_polygon(PackedVector2Array([g + Vector2(-14, -40), g + Vector2(14, -40), g + Vector2(22, 0), g + Vector2(-22, 0)]), Color("a02a2a"))
-	draw_rect(Rect2(g + Vector2(-10, -46), Vector2(20, 34)), Color("2f8a52"))
-	draw_circle(g + Vector2(0, -54), 9.0, Color("e8c8a8"))
-	draw_rect(Rect2(g + Vector2(-9, -64), Vector2(18, 6)), Color("7a4fb0"))
-	draw_line(g + Vector2(16, 0), g + Vector2(16, -78), Color("c9a46a"), 2.0)
-	var glow := 8.0 + sin(_clock * 18.0) * 2.0 + k * 6.0
-	draw_circle(g + Vector2(16, -84), glow, Color(WAVE, 0.5))
-	draw_circle(g + Vector2(16, -84), 6.0, Color(WAVE))
-	# title
+## Faint lane guides while fighting; an opened lane is striped in the player's
+## colour (enemy's opened lane faintly) with the time it stays open.
+func _draw_lanes() -> void:
+	var n: int = sim.lane_count()
+	if n <= 0 or sim.time <= 0.0:
+		return
+	for i in range(1, n):
+		var y: float = sim.lane_bounds(i).x
+		var x := 0.0
+		while x < 480.0:
+			draw_line(Vector2(x, y), Vector2(x + 6.0, y), Color(1, 1, 1, 0.10), 1.0)
+			x += 12.0
+	for s in sim.sides:
+		if s.split_lane < 0:
+			continue
+		var b: Vector2 = sim.lane_bounds(s.split_lane)
+		var mine: bool = s.id == player_side
+		var col := OPEN_LANE if mine else Color(0.8, 0.8, 0.8)
+		var a := 0.16 if mine else 0.07
+		draw_rect(Rect2(0, b.x, 480, b.y - b.x), Color(col, a))
+		# chevrons pointing out of the lane, on this side's half
+		var f := float(s.facing)
+		var x0 := 20.0 if f > 0.0 else 300.0
+		for k in 4:
+			var cx := x0 + k * 40.0
+			draw_line(Vector2(cx - 4, b.x + 6), Vector2(cx, b.x + 2), Color(col, a * 4.0), 1.0)
+			draw_line(Vector2(cx + 4, b.x + 6), Vector2(cx, b.x + 2), Color(col, a * 4.0), 1.0)
+			draw_line(Vector2(cx - 4, b.y - 6), Vector2(cx, b.y - 2), Color(col, a * 4.0), 1.0)
+			draw_line(Vector2(cx + 4, b.y - 6), Vector2(cx, b.y - 2), Color(col, a * 4.0), 1.0)
+		if mine:
+			var font := ThemeDB.fallback_font
+			draw_string(font, Vector2(4 if f > 0.0 else 420, b.x + (b.y - b.x) / 2.0 + 3),
+					"เปิด %.1f" % maxf(0.0, s.split_left), HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color(col, 0.9))
+
+
+## A special in its warning time: the lane it will run down blinks, with an
+## arrow showing which way it comes and a bar for the time left.
+func _draw_warning(s) -> void:
+	var p: Dictionary = s.pending
+	var enemy: bool = s.id != player_side
+	var col := DANGER if enemy else _special_color(s)
+	var top := maxf(108.0, float(p.y0))
+	var bot := minf(240.0, float(p.y1))
+	var k := 1.0 - float(p.t) / maxf(0.001, float(p.total))  # 0 -> 1
+	var blink := 0.5 + 0.5 * sin(_clock * (10.0 + k * 14.0))
+	draw_rect(Rect2(0, top, 480, bot - top), Color(col, 0.16 + 0.16 * blink))
+	draw_line(Vector2(0, top), Vector2(480, top), Color(col, 0.7), 1.0)
+	draw_line(Vector2(0, bot), Vector2(480, bot), Color(col, 0.7), 1.0)
+	# arrows in the direction of travel
+	var f := float(s.facing)
+	var mid := (top + bot) / 2.0
+	for i in 5:
+		var ax := fposmod(i * 100.0 + _clock * 60.0 * f, 500.0) - 10.0
+		draw_line(Vector2(ax, mid - 6), Vector2(ax + f * 8, mid), Color(col, 0.6), 2.0)
+		draw_line(Vector2(ax, mid + 6), Vector2(ax + f * 8, mid), Color(col, 0.6), 2.0)
+	# time left: bar shrinking along the lane edge
+	draw_rect(Rect2(0, top, 480.0 * (1.0 - k), 2), Color(col, 0.9))
+
+
+## Top banners: special name and countdown while it warms up.
+func _draw_banners() -> void:
 	var font := ThemeDB.fallback_font
-	var size := 16
-	var tw := font.get_string_size(_cutscene_label, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x
-	draw_string(font, Vector2(470 - tw, 120), _cutscene_label, HORIZONTAL_ALIGNMENT_LEFT, -1, size, Color(WAVE))
+	var row := 0
+	for s in sim.sides:
+		if s.pending.is_empty():
+			continue
+		var enemy: bool = s.id != player_side
+		var col := DANGER if enemy else _special_color(s)
+		var lane_name := ""
+		var lane := int(s.pending.lane)
+		var labels: Array = sim.cfg.get("lanes", {}).get("labels", [])
+		if lane >= 0 and lane < labels.size():
+			lane_name = " · เลน" + str(labels[lane])
+		elif lane < 0:
+			lane_name = " · ทั้งสนาม"
+		var text := "%s%s%s  %.1f" % ["! " if enemy else "", s.special.get("label", ""), lane_name,
+				maxf(0.0, float(s.pending.t))]
+		var size := 11
+		var tw := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x
+		var y := 52.0 + row * 16.0
+		draw_rect(Rect2(240.0 - tw / 2.0 - 6.0, y - 11.0, tw + 12.0, 15.0), Color(0, 0, 0, 0.6))
+		draw_string(font, Vector2(240.0 - tw / 2.0, y), text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, col)
+		row += 1
+
+
+func _other_side(id: String) -> String:
+	for s in sim.sides:
+		if s.id != id:
+			return s.id
+	return id
+
+
+# --- duel close-up -------------------------------------------------------------
+
+const DUEL_X := [165.0, 315.0]  # first side (facing right) on the left
+const DUEL_Y := 205.0
+const DUEL_SCALE := 2.6  # placeholder generals
+const DUEL_SPRITE_SCALE := 2.0  # sprites: integer scale keeps the pixels square
+
+
+## The duel: dark backdrop, the two generals big and facing each other, the
+## attacker lunges on each blow, damage numbers float up, HP bars on top.
+func _draw_duel() -> void:
+	var k := 1.0 if _duel_t0 < 0.0 else clampf((_clock - _duel_t0) / 0.4, 0.0, 1.0)
+	draw_rect(Rect2(0, 0, 480, 270), Color(0.05, 0.05, 0.09, 0.85 * k + 0.1))
+	# spotlight and ground
+	draw_circle(Vector2(240, 300), 210.0, Color(0.95, 0.75, 0.45, 0.10))
+	draw_rect(Rect2(0, DUEL_Y, 480, 270 - DUEL_Y), Color(0.16, 0.13, 0.12))
+	draw_line(Vector2(0, DUEL_Y), Vector2(480, DUEL_Y), Color(0.95, 0.75, 0.45, 0.4), 1.0)
+	var font := ThemeDB.fallback_font
+	for i in sim.sides.size():
+		var s = sim.sides[i]
+		var g = sim.general_of(s.id)
+		if g == null:
+			continue
+		var fade := 1.0
+		if not g.alive:
+			fade = clampf(1.0 - (_clock - _died_at.get(g.id, _clock)) / 0.8, 0.0, 1.0)
+		# lunge toward the opponent while swinging
+		var lunge: float = (g.swing / 0.25) * 22.0 * float(s.facing) if g.swing > 0.0 else 0.0
+		var shake := sin(_clock * 60.0) * 2.0 if g.fx > 0.0 else 0.0
+		var pos := Vector2(DUEL_X[i] + lunge + shake, DUEL_Y)
+		draw_ellipse_shadow(pos, fade)
+		if not _draw_sprite(g, pos, fade, g.fx > 0.0, DUEL_SPRITE_SCALE):
+			draw_set_transform(pos, 0.0, Vector2(DUEL_SCALE, DUEL_SCALE))
+			_draw_general(g, Vector2.ZERO, fade, g.fx > 0.0)
+			draw_set_transform(Vector2.ZERO)
+		# HP bar and name, big, on this general's side
+		var w := 170.0
+		var x := 20.0 if i == 0 else 480.0 - 20.0 - w
+		var y := 26.0
+		var hp := clampf(g.hp / g.max_hp, 0.0, 1.0)
+		draw_rect(Rect2(x - 1, y - 1, w + 2, 9), Color(0, 0, 0, 0.8))
+		var col := Color("e05a4a") if hp < 0.3 else HP_FG
+		if i == 0:
+			draw_rect(Rect2(x, y, w * hp, 7), col)
+		else:
+			draw_rect(Rect2(x + w * (1.0 - hp), y, w * hp, 7), col)
+		var label := "แม่ทัพ%s  %d" % [_side_label(s.id), maxi(0, ceili(g.hp))]
+		var st: Dictionary = sim.duel_style(g)
+		var style := "ตี %d ครั้ง/ตา" % int(st.hits)
+		var tw := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x
+		var sw := font.get_string_size(style, HORIZONTAL_ALIGNMENT_LEFT, -1, 8).x
+		draw_string(font, Vector2(x if i == 0 else x + w - tw, y + 21), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 11,
+				Color(1, 1, 1, 0.95))
+		draw_string(font, Vector2(x if i == 0 else x + w - sw, y + 32), style, HORIZONTAL_ALIGNMENT_LEFT, -1, 8,
+				Color(1, 1, 1, 0.6))
+	# whose turn: small marker over the attacker
+	if sim.over == "" and sim.duel.has("order"):
+		var atk: String = sim.duel.order[sim.duel.turn]
+		var idx := 0 if sim.sides[0].id == atk else 1
+		var mx: float = DUEL_X[idx]
+		draw_colored_polygon(PackedVector2Array([Vector2(mx - 5, 82), Vector2(mx + 5, 82), Vector2(mx, 89)]),
+				Color(1, 0.85, 0.4, 0.8 + 0.2 * sin(_clock * 8.0)))
+	# damage numbers
+	for n in _duel_nums:
+		var age: float = _clock - n.t0
+		if age > 1.0:
+			continue
+		var idx := 0 if sim.sides[0].id == n.side else 1
+		var size := 18 if n.get("big", false) else 13
+		var p := Vector2(DUEL_X[idx] - 10.0, 110.0 - age * 30.0)
+		draw_string(font, p + Vector2(1, 1), n.text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, Color(0, 0, 0, 1.0 - age))
+		draw_string(font, p, n.text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, Color(n.col, 1.0 - age))
+	# title
+	if _duel_t0 >= 0.0 and _clock - _duel_t0 < 1.6:
+		var a := clampf(1.6 - (_clock - _duel_t0), 0.0, 1.0)
+		var title := "ดวล!"
+		var ttw := font.get_string_size(title, HORIZONTAL_ALIGNMENT_LEFT, -1, 26).x
+		draw_string(font, Vector2(240 - ttw / 2.0, 140), title, HORIZONTAL_ALIGNMENT_LEFT, -1, 26, Color(1, 0.85, 0.4, a))
+
+
+func draw_ellipse_shadow(pos: Vector2, fade: float) -> void:
+	draw_set_transform(pos + Vector2(0, 2), 0.0, Vector2(1.0, 0.25))
+	draw_circle(Vector2.ZERO, 30.0, Color(0, 0, 0, 0.45 * fade))
+	draw_set_transform(Vector2.ZERO)
+
+
+# --- sprites ---------------------------------------------------------------------
+# Config "sprites": { "<unit type id>": {
+#     "dir": "res://assets/units/<id>",  folder with one strip per animation
+#     "frame": [w, h],                   size of one frame (all strips)
+#     "foot": [x, y],                    pixel in the frame that stands on the ground
+#     "anims": { "idle": {"frames": 4, "fps": 6}, "walk": ..., "attack": ...,
+#                "cast": ..., "die": {"frames": 3, "fps": 8, "loop": false} } } }
+# Strips are <dir>/<anim>.png, frames left to right, character facing RIGHT
+# (flipped for the side facing left). Missing anims fall back to idle; a unit
+# with no idle strip uses the placeholder shapes.
+
+func _load_sprites() -> void:
+	_sprites.clear()
+	var defs: Dictionary = sim.cfg.get("sprites", {})
+	for id in defs:
+		if str(id).begins_with("_"):
+			continue
+		var d: Dictionary = defs[id]
+		var fw := int(d.frame[0])
+		var fh := int(d.frame[1])
+		var anims := {}
+		for a in d.get("anims", {}):
+			var ad: Dictionary = d.anims[a]
+			var path := "%s/%s.png" % [d.dir, a]
+			if not ResourceLoader.exists(path):
+				continue
+			var tex: Texture2D = load(path)
+			var n := int(ad.get("frames", maxi(1, tex.get_width() / fw)))
+			anims[a] = {"tex": tex, "frames": n, "fps": float(ad.get("fps", 6)), "loop": bool(ad.get("loop", true))}
+		if not anims.has("idle"):
+			continue
+		var foot: Array = d.get("foot", [fw / 2, fh - 1])
+		_sprites[id] = {"anims": anims, "w": fw, "h": fh, "foot": Vector2(foot[0], foot[1]),
+				"height": float(d.get("height", fh))}
+
+
+## Which animation a unit is in right now.
+func _anim_of(u) -> String:
+	if not u.alive:
+		return "die"
+	if u.is_general and not u.side.pending.is_empty():
+		return "cast"
+	if u.swing > 0.0:
+		return "attack"
+	if u.walking:
+		return "walk"
+	return "idle"
+
+
+## Draws u from its sprite strip with its feet at p. False = no sprite.
+func _draw_sprite(u, p: Vector2, fade: float, flash: bool, scale: float) -> bool:
+	if not _sprites.has(u.type_id):
+		return false
+	var sp: Dictionary = _sprites[u.type_id]
+	var name := _anim_of(u)
+	if not sp.anims.has(name):
+		if name == "die":
+			return true  # no death strip: just vanish (the poof fx plays)
+		name = "idle"
+	var a: Dictionary = sp.anims[name]
+	var t: float = u.anim
+	if name == "die":
+		t = _clock - _died_at.get(u.id, _clock)
+	elif name == "attack":
+		t = 0.25 - u.swing  # swing counts down from swing_time
+	var i := int(t * a.fps)
+	i = i % int(a.frames) if a.loop else mini(i, int(a.frames) - 1)
+	var w: float = sp.w
+	var h: float = sp.h
+	var f := float(u.side.facing)
+	var foot: Vector2 = sp.foot
+	# born pop-in for split slimes
+	var born: float = _clock - _born_at.get(u.id, -10.0)
+	var pop := clampf(born / 0.25, 0.3, 1.0) if born < 0.25 else 1.0
+	var s := scale * pop
+	# drawn in a frame mirrored around the feet for the side facing left
+	draw_set_transform(p, 0.0, Vector2(s * f, s))
+	var dst := Rect2(-foot.x, -foot.y, w, h)
+	var src := Rect2(i * w, 0, w, h)
+	draw_texture_rect_region(a.tex, dst, src, Color(1, 1, 1, fade))
+	if flash:
+		# white flash: draw again over-bright
+		draw_texture_rect_region(a.tex, dst, src, Color(3, 3, 3, 0.6 * fade))
+	draw_set_transform(Vector2.ZERO)
+	return true

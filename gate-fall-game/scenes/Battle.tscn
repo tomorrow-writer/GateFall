@@ -100,11 +100,10 @@ offset_bottom = -5.0
 grow_horizontal = 2
 grow_vertical = 0
 mouse_filter = 2
-theme_override_constants/separation = 4
+theme_override_constants/separation = 2
 
 [node name="ChargeButton" type="Button" parent="Hud/Root/BottomBar"]
 unique_name_in_owner = true
-custom_minimum_size = Vector2(64, 0)
 layout_mode = 2
 focus_mode = 0
 theme_override_font_sizes/font_size = 10
@@ -113,12 +112,33 @@ text = "บุก [1]"
 
 [node name="HoldButton" type="Button" parent="Hud/Root/BottomBar"]
 unique_name_in_owner = true
-custom_minimum_size = Vector2(64, 0)
 layout_mode = 2
 focus_mode = 0
 theme_override_font_sizes/font_size = 10
 toggle_mode = true
 text = "ตั้งรับ [2]"
+
+[node name="RetreatButton" type="Button" parent="Hud/Root/BottomBar"]
+unique_name_in_owner = true
+layout_mode = 2
+focus_mode = 0
+theme_override_font_sizes/font_size = 10
+toggle_mode = true
+text = "ถอย [3]"
+
+[node name="LaneBox" type="HBoxContainer" parent="Hud/Root/BottomBar"]
+unique_name_in_owner = true
+layout_mode = 2
+tooltip_text = "แยกเลน"
+theme_override_constants/separation = 1
+
+[node name="GeneralButton" type="Button" parent="Hud/Root/BottomBar"]
+unique_name_in_owner = true
+layout_mode = 2
+focus_mode = 0
+theme_override_font_sizes/font_size = 9
+toggle_mode = true
+text = "แม่ทัพลงสนาม [G]"
 
 [node name="Spacer" type="Control" parent="Hud/Root/BottomBar"]
 layout_mode = 2
@@ -127,7 +147,6 @@ mouse_filter = 2
 
 [node name="SpecialButton" type="Button" parent="Hud/Root/BottomBar"]
 unique_name_in_owner = true
-custom_minimum_size = Vector2(150, 0)
 layout_mode = 2
 focus_mode = 0
 theme_override_font_sizes/font_size = 10
@@ -173,6 +192,60 @@ layout_mode = 2
 theme_override_font_sizes/font_size = 9
 text = "ตี ×1   รับดาเมจ ×1   ความเร็ว ×1"
 horizontal_alignment = 1
+
+[node name="DuelPanel" type="PanelContainer" parent="Hud/Root"]
+unique_name_in_owner = true
+visible = false
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -120.0
+offset_top = -50.0
+offset_right = 120.0
+offset_bottom = 34.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_styles/panel = SubResource("StyleBox_panel")
+
+[node name="VBox" type="VBoxContainer" parent="Hud/Root/DuelPanel"]
+layout_mode = 2
+theme_override_constants/separation = 3
+
+[node name="DuelTitle" type="Label" parent="Hud/Root/DuelPanel/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 13
+text = "ทหารหมดทั้งสองฝั่ง"
+horizontal_alignment = 1
+
+[node name="DuelInfo" type="Label" parent="Hud/Root/DuelPanel/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 9
+text = "-"
+horizontal_alignment = 1
+
+[node name="Row" type="HBoxContainer" parent="Hud/Root/DuelPanel/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 6
+alignment = 1
+
+[node name="DuelButton" type="Button" parent="Hud/Root/DuelPanel/VBox/Row"]
+unique_name_in_owner = true
+layout_mode = 2
+focus_mode = 0
+theme_override_font_sizes/font_size = 10
+text = "ดวล [Enter]"
+
+[node name="DuelRetreatButton" type="Button" parent="Hud/Root/DuelPanel/VBox/Row"]
+unique_name_in_owner = true
+layout_mode = 2
+focus_mode = 0
+theme_override_font_sizes/font_size = 10
+text = "ถอยทัพ [3]"
 
 [node name="ResultPanel" type="PanelContainer" parent="Hud/Root"]
 unique_name_in_owner = true

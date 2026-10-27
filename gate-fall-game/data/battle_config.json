@@ -1,5 +1,5 @@
 {
-  "_about": "Battle tuning for BattleSim.gd. Troop values come from prototype/battle_core.js; generals are new (start: ~6x a soldier, tune with tools/run_sims.gd). Times are seconds, distances are field pixels (480x240).",
+  "_about": "Battle tuning for BattleSim.gd. Started from prototype/battle_core.js; HP x1.6 for longer battles with 2-4 specials each, slime atk raised (6.5) so line/charge mirror matches are ~50/50 with both sides on BattleAI. Tune with tools/run_sims.gd. Times are seconds, distances are field pixels (480x240).",
 
   "sim": {
     "steps_per_second": 15,
@@ -28,13 +28,30 @@
     "anim_jitter": 6,
     "swing_time": 0.25,
     "hit_flash": 0.15,
-    "separation_min_d2": 0.0001
+    "separation_min_d2": 0.0001,
+    "_special_take_note": "true = specials are reduced by the target's order/formation damage-taken multipliers (hold, square), like normal hits.",
+    "special_take_mult": true
   },
+
+  "_lanes_note": "The field height (y_min..y_max) splits into this many equal lanes, top to bottom. Lane specials hit one lane; the target side dodges by opening it (split).",
+  "lanes": { "count": 3, "labels": ["บน", "กลาง", "ล่าง"] },
+
+  "_commands_note": "switch_delay = s the troops stand frozen after an order change (the price of reacting).",
+  "commands": { "switch_delay": 0.4 },
+
+  "_split_note": "Open a lane: troops in it step out to the neighbouring lane at speed_mult x their speed, nobody enters it for duration s, everyone hits crowd_atk x while it is open. margin = px around the lane that also counts as inside.",
+  "split": { "label": "แยกเลน", "duration": 2.5, "speed_mult": 2.5, "crowd_atk": 0.95, "margin": 2 },
+
+  "_duel_rules_note": "When both armies are gone and both generals stand, the battle cuts to a duel (BattleSim duel section). offer_time = s each side has to choose duel or retreat (undecided = duel; retreat = lose the battle, general survives). Then turns alternate, the faster general first: start_gap s before the first blow, hit_gap s between blows in a turn, turn_gap s between turns. The player only watches.",
+  "duel_rules": { "offer_time": 8, "start_gap": 1.2, "hit_gap": 0.3, "turn_gap": 0.9 },
+
+  "_general_charge_note": "General fights at the front: +mp_on_hit MP per hit it lands, specials launch from where it stands; takes front_take x damage out there, and channel_take x on top while channelling a special; walks back at return_spd_mult x speed when recalled.",
+  "general_charge": { "label": "แม่ทัพลงสนาม", "mp_on_hit": 8, "front_take": 1.5, "channel_take": 1.25, "return_spd_mult": 0.8 },
 
   "units": {
     "slime_big": {
       "kind": "big",
-      "hp": 30, "atk": 5, "cd": 1.0, "spd": 28,
+      "hp": 48, "atk": 6.5, "cd": 1.0, "spd": 28,
       "reach": 25, "radius": 11,
       "split": {
         "into": "slime_mini",
@@ -56,21 +73,23 @@
     },
     "knight": {
       "kind": "knight",
-      "hp": 40, "atk": 7, "cd": 1.1, "spd": 24,
+      "hp": 64, "atk": 7, "cd": 1.1, "spd": 24,
       "reach": 25, "radius": 10
     },
-    "_generals_note": "Generals, starting point from run_sims: slime general 6x hp / 3x atk of a big slime; knight general 5x hp / ~2.6x atk of a knight (6x/3x made slimes win only 5-20%). A bit slower than troops. engage_range = fights enemies this close; follow_gap = hangs this far behind its troops.",
+    "_generals_note": "Generals start at general_spot behind their army and stay there (hitting only enemies that reach them) until sent in with general_charge; sized so a general-vs-general duel (when all troops are gone) is about even: slime 310 hp / 17 atk vs knight 320 / 18. Each general has a style: front_take = its own damage-taken x when sent in (else general_charge.front_take), ai_charge = how the AI uses it: front (fights at the front from the start), mopup (goes in to finish a beaten army), never. The slime general is a brawler (strong at the front, so it pays more there); the knight general is a commander who should stay back. duel = style in the one-on-one duel (see duel_rules): hits blows per turn of power each (+- jitter share), each landing with chance accuracy. Slime general: two quick, steady blows; knight general: one heavy, swingy blow (same expected damage per turn, roughly)",
     "general_slime": {
       "kind": "general", "role": "general",
-      "hp": 180, "atk": 15, "cd": 1.0, "spd": 24,
+      "hp": 310, "atk": 17, "cd": 1.0, "spd": 24,
       "reach": 28, "radius": 14,
-      "engage_range": 70, "follow_gap": 45
+      "front_take": 2.5, "ai_charge": "front",
+      "duel": { "hits": 2, "power": 17, "jitter": 0.15, "accuracy": 0.95 }
     },
     "general_knight": {
       "kind": "general", "role": "general",
-      "hp": 200, "atk": 18, "cd": 1.1, "spd": 20,
+      "hp": 320, "atk": 18, "cd": 1.1, "spd": 20,
       "reach": 28, "radius": 14,
-      "engage_range": 70, "follow_gap": 45
+      "front_take": 1.5, "ai_charge": "never",
+      "duel": { "hits": 1, "power": 48, "jitter": 0.3, "accuracy": 0.85 }
     }
   },
 
@@ -78,7 +97,8 @@
   "orders": {
     "charge":  { "label": "บุก", "atk_mult": 1.15, "take_mult": 1,    "mp_regen": 4 },
     "hold":    { "label": "ตั้งรับ", "atk_mult": 1,    "take_mult": 0.85, "mp_regen": 4.5, "hold_range": 70 },
-    "advance": { "label": "เดินหน้า", "atk_mult": 1,    "take_mult": 1,    "mp_regen": 4 }
+    "advance": { "label": "เดินหน้า", "atk_mult": 1,    "take_mult": 1,    "mp_regen": 4 },
+    "retreat": { "label": "ถอย",    "atk_mult": 1,    "take_mult": 1,    "mp_regen": 3, "retreat": true, "spd_mult": 1.2 }
   },
 
   "_formations_note": "Spots are for an army facing right (left side of the field); a side facing left mirrors x as width - x. flank = extra atk when flank_min or more allies hit the same target. Roles toward generals: general_pull (<1 = enemy general counts as closer when picking targets, applied to squared distance), envelop (px troops swing above/below the enemy general), leash (px troops stay within of their own general).",
@@ -109,19 +129,75 @@
     }
   },
 
+  "_specials_note": "Casting pays MP, then telegraph s of warning (target lane shown, general stands still), then the special launches launch_offset px in front of the general (start_x without a general) and sweeps toward the enemy at speed, a band width px deep, hitting each enemy once. lanes 0 = full field height; 1 = one lane aimed by the caster (AI, or best lane for the player). range = px travelled before it fades; damage drops to min_damage_pct % at the end (no range = full damage to end_x). knockback = px survivors are pushed back. type/color are for BattleView.",
   "specials": {
     "emerald_slime_wave": {
       "label": "คลื่นสไลม์มรกต",
-      "mp_cost": 70,
-      "damage": 3,
+      "type": "wave",
+      "color": "73ff8c",
+      "mp_cost": 60,
+      "damage": 10,
+      "lanes": 0,
+      "telegraph": 1.75,
+      "launch_offset": 12,
+      "range": 420,
+      "min_damage_pct": 40,
       "start_x": 30,
-      "speed": 340,
+      "speed": 300,
       "width": 40,
       "end_x": 520,
       "hit_flash": 0.3,
-      "auto_cast_after": 3,
-      "cutscene_time": 0.9
+      "auto_cast_after": 3
+    },
+    "cavalry_charge": {
+      "label": "ทัพม้าบุกทะลวง",
+      "type": "charge",
+      "color": "f0c060",
+      "mp_cost": 65,
+      "damage": 20,
+      "lanes": 1,
+      "telegraph": 1.75,
+      "launch_offset": 12,
+      "knockback": 14,
+      "start_x": 0,
+      "speed": 300,
+      "width": 30,
+      "end_x": 520,
+      "hit_flash": 0.3,
+      "auto_cast_after": 3
     }
+  },
+
+  "_ai_note": "BattleAI, see scripts/battle/BattleAI.gd (same brain for either side). Casting: every think_interval s, hit value per enemy = share of max HP taken + kill_bonus if it dies, general x general_weight; cast when the best lane holds min_share of the value of hitting every enemy; full MP lowers it to full_mp_min_share; own general below danger_hp with enemies within danger_range: any hit, those enemies x danger_weight. Dodging: reaction_time s after an enemy cast, chance dodge_skill: open the lane if it holds dodge_min_units (general = general_weight); full-field special -> full_response order until it passes. General charge (mop-up): after charge_after s, go in at HP >= charge_hp with troop HP >= charge_adv x enemy's and at most charge_max_enemy_troops enemy troops left; come back at HP < return_hp or troop HP < return_adv x. Duel offer: retreat if our general needs more than duel_retreat_ratio x the turns theirs needs to win.",
+  "ai": {
+    "think_interval": 0.5,
+    "min_share": 0.35,
+    "full_mp_min_share": 0.15,
+    "kill_bonus": 1.0,
+    "general_weight": 10,
+    "danger_hp": 0.5,
+    "danger_range": 70,
+    "danger_weight": 3,
+    "reaction_time": 0.6,
+    "dodge_skill": 0.85,
+    "dodge_min_units": 3,
+    "full_response": "hold",
+    "charge_after": 4,
+    "charge_hp": 0.7,
+    "charge_adv": 1.5,
+    "charge_max_enemy_troops": 3,
+    "return_hp": 0.4,
+    "return_adv": 0.7,
+    "duel_retreat_ratio": 1.5
+  },
+
+  "_sprites_note": "Sprite size standard (pixels at the 480x270 game resolution, shown x3 at 1440x810, x4 at 1080p): troops 32x32 frames, small slime 16x16, generals 48x48. Generals in the duel close-up are drawn at x2 (96 px tall). Strips: <dir>/<anim>.png, frames left to right, facing RIGHT. foot = frame pixel that stands on the ground; height = px above the feet for HP bars. Units without sprites use the placeholder shapes. The PNGs in assets/units are placeholders from tools/make_placeholder_sprites.py: replace them with real art of the same frame size.",
+  "sprites": {
+    "knight": { "dir": "res://assets/units/knight", "frame": [32, 32], "foot": [16, 30], "height": 30, "anims": { "idle": {"frames": 2, "fps": 3}, "walk": {"frames": 4, "fps": 8}, "attack": {"frames": 3, "fps": 12, "loop": false}, "die": {"frames": 3, "fps": 6, "loop": false} } },
+    "slime_big": { "dir": "res://assets/units/slime_big", "frame": [32, 32], "foot": [16, 29], "height": 19, "anims": { "idle": {"frames": 2, "fps": 3}, "walk": {"frames": 4, "fps": 8}, "attack": {"frames": 3, "fps": 12, "loop": false}, "die": {"frames": 3, "fps": 6, "loop": false} } },
+    "slime_mini": { "dir": "res://assets/units/slime_mini", "frame": [16, 16], "foot": [8, 13], "height": 11, "anims": { "idle": {"frames": 2, "fps": 3}, "walk": {"frames": 4, "fps": 8}, "attack": {"frames": 3, "fps": 12, "loop": false}, "die": {"frames": 3, "fps": 6, "loop": false} } },
+    "general_slime": { "dir": "res://assets/units/general_slime", "frame": [48, 48], "foot": [24, 46], "height": 46, "anims": { "idle": {"frames": 2, "fps": 3}, "walk": {"frames": 4, "fps": 8}, "attack": {"frames": 3, "fps": 12, "loop": false}, "cast": {"frames": 2, "fps": 4}, "die": {"frames": 3, "fps": 6, "loop": false} } },
+    "general_knight": { "dir": "res://assets/units/general_knight", "frame": [48, 48], "foot": [24, 46], "height": 46, "anims": { "idle": {"frames": 2, "fps": 3}, "walk": {"frames": 4, "fps": 8}, "attack": {"frames": 3, "fps": 12, "loop": false}, "cast": {"frames": 2, "fps": 4}, "die": {"frames": 3, "fps": 6, "loop": false} } }
   },
 
   "_sides_note": "Side order matters: units spawn interleaved in this order, and if both armies die on the same step the first side wins (prototype behaviour).",
@@ -151,8 +227,8 @@
       "facing": -1,
       "spawn_jitter": [4, 4],
       "formation": "line",
-      "order": "advance",
-      "special": "",
+      "order": "charge",
+      "special": "cavalry_charge",
       "general": "general_knight",
       "general_spot": [40, 176],
       "mp_start": 30,
