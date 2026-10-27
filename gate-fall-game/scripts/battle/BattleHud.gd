@@ -124,20 +124,21 @@ func _draw_clock(font: Font) -> void:
 	_text(font, "%d" % ceili(left), Vector2(r.position.x, r.position.y + 23), 14, col, true, r.size.x, true)
 
 
-## Bottom gauges: each side's MP on its own half, a tick at the special's cost,
-## glowing when it can cast. The enemy's is shown too, as in DF, so the player
-## can see a special coming.
+## Bottom gauges: each side's MP on its own half, a tick at each special's
+## cost (small / medium / large: taller tick for the bigger one, lit once
+## affordable), the bar glowing when any can be cast. The enemy's is shown
+## too, as in DF, so the player can see a special coming. A guard running
+## shows as a shield bar under the gauge.
 func _draw_mp(font: Font, i: int) -> void:
 	var s = sim.sides[i]
-	if s.special.is_empty():
+	if s.specials.is_empty():
 		return
 	var left := i == 0
 	var w := 116.0
 	var r := Rect2(2 if left else SCREEN.x - 2 - w, 160, w, 17)
 	_frame(r)
 	var k := clampf(s.mp / maxf(1.0, s.mp_max), 0.0, 1.0)
-	var cost := float(s.special.mp_cost)
-	var ready: bool = s.mp >= cost
+	var ready: bool = sim.special_ready(s.id)
 	var label := "MP %d" % int(s.mp)
 	_text(font, label, Vector2(r.position.x + 4, r.position.y + 11), 8, TEXT, left, r.size.x - 8)
 	var bx := r.position.x + 40 if left else r.position.x + 4
@@ -150,9 +151,18 @@ func _draw_mp(font: Font, i: int) -> void:
 		draw_rect(Rect2(bar.position, Vector2(bar.size.x * k, bar.size.y)), col)
 	else:
 		draw_rect(Rect2(bar.end.x - bar.size.x * k, bar.position.y, bar.size.x * k, bar.size.y), col)
-	var ck := clampf(cost / maxf(1.0, s.mp_max), 0.0, 1.0)
-	var tx := bar.position.x + bar.size.x * ck if left else bar.end.x - bar.size.x * ck
-	draw_line(Vector2(tx, bar.position.y - 2), Vector2(tx, bar.end.y + 1), TRIM_HI, 1.0)
+	for j in s.specials.size():
+		var cost := float(s.specials[j].mp_cost)
+		var ck := clampf(cost / maxf(1.0, s.mp_max), 0.0, 1.0)
+		var tx := roundf(bar.position.x + bar.size.x * ck if left else bar.end.x - bar.size.x * ck)
+		var tick := TRIM_HI if s.mp >= cost else Color(TRIM, 0.7)
+		draw_line(Vector2(tx, bar.position.y - 1 - j), Vector2(tx, bar.end.y + 1), tick, 1.0)
+	if not s.guard.is_empty():
+		var gk := clampf(float(s.guard.left) / maxf(0.001, float(s.guard.total)), 0.0, 1.0)
+		var gcol := Color(str(s.guard.special.get("color", "8cc8ff")))
+		var gw := bar.size.x * gk
+		var gx := bar.position.x if left else bar.end.x - gw
+		draw_rect(Rect2(gx, bar.end.y + 2, gw, 2), gcol)
 
 
 ## Middle of the bottom: the player's current order; click (or Tab) for the menu.

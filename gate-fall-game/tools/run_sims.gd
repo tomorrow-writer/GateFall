@@ -18,12 +18,14 @@
 ##   --gcharge=X     player general: never (default) | always (in from the start) | ai
 ##   --cast=auto|ai  how the player's special is fired in the "on" rows:
 ##                   auto (default) = as soon as ready, best lane · ai = BattleAI timing
+##   --rows=on|off|both  which special rows to run (default both)
 ##   --enemy-dodge=on|off   (default on)
 ##   --enemy-gcharge=X      enemy general: ai (default) | never | always
 ##
 ## Each combo = formation x order x special (auto-cast on/off) for the commanded side.
 ## surv(win) / enemy(loss) count troops only; genHP = player's general HP left on wins;
-## cast/eCast = player/enemy specials per battle, split = lanes the player opened,
+## cast/eCast = player/enemy specials per battle, by slot (small/medium/large),
+## split = lanes the player opened,
 ## duel = battles that reached the generals' duel offer, dWin = player wins among
 ## the duels fought, ret = battles the player's general retreated from the offer.
 ## Regression check against the JS prototype:
@@ -50,6 +52,7 @@ func _init() -> void:
 	var enemy_ai: String = opts.get("enemy-ai", "on")
 	var only_form: String = opts.get("form", "")
 	var orders: PackedStringArray = str(opts.get("orders", ",".join(PLAYER_ORDERS))).split(",")
+	var rows: Array = {"on": [true], "off": [false]}.get(str(opts.get("rows", "both")), [false, true])
 	var extra := {
 		"dodge": str(opts.get("dodge", "on")) == "on",
 		"gcharge": str(opts.get("gcharge", "never")),
@@ -67,17 +70,17 @@ func _init() -> void:
 			side_id, enemy_id, enemy_ai, opts.get("config", "res://data/battle_config.json")])
 	print("player dodge %s, general %s · enemy dodge %s, general %s" % ["on" if extra.dodge else "off",
 			extra.gcharge, "on" if extra.enemy_dodge else "off", extra.enemy_gcharge])
-	print("%-9s %-7s %-8s %7s %7s %10s %10s %8s %6s %6s %6s %6s %6s %6s" % ["formation", "order", "special", "win%", "time",
+	print("%-9s %-7s %-8s %7s %7s %10s %10s %8s %14s %14s %6s %6s %6s %6s" % ["formation", "order", "special", "win%", "time",
 			"surv(win)", "enemy(loss)", "genHP", "cast", "eCast", "split", "duel", "dWin", "ret"])
 	var started := Time.get_ticks_msec()
 	for form in cfg.formations.keys():
 		if only_form != "" and form != only_form:
 			continue
 		for order in orders:
-			for auto in [false, true]:
+			for auto in rows:
 				var r := _run_combo(cfg, side_id, enemy_id, form, order, auto, enemy_ai, runs, seed_value, dt,
 						per_battle, extra)
-				print("%-9s %-7s %-8s %6.1f%% %6.1fs %10.2f %10.2f %8s %6.2f %6.2f %6.2f %5.0f%% %5s %5.0f%%" % [form,
+				print("%-9s %-7s %-8s %6.1f%% %6.1fs %10.2f %10.2f %8s %14s %14s %6.2f %5.0f%% %5s %5.0f%%" % [form,
 						order, "on" if auto else "off", r.win * 100.0, r.time, r.surv_win, r.surv_enemy, r.gen_hp,
 						r.p_cast, r.e_cast, r.splits, r.duel * 100.0, r.duel_win, r.ret * 100.0])
 	print("done in %.1fs" % ((Time.get_ticks_msec() - started) / 1000.0))
@@ -98,8 +101,8 @@ func _run_combo(cfg: Dictionary, side_id: String, enemy_id: String, form: String
 	var enemy_left := 0
 	var gen_hp := 0.0
 	var has_general := false
-	var e_casts := 0
-	var p_casts := 0
+	var e_casts := []
+	var p_casts := []
 	var splits := 0
 	var offers := 0
 	var duels := 0
@@ -111,8 +114,8 @@ func _run_combo(cfg: Dictionary, side_id: String, enemy_id: String, form: String
 		while sim.over == "":
 			sim.step(dt)
 		var c := sim.count()
-		e_casts += sim.get_side(enemy_id).casts
-		p_casts += sim.get_side(side_id).casts
+		_add_slots(e_casts, sim.get_side(enemy_id).slot_casts)
+		_add_slots(p_casts, sim.get_side(side_id).slot_casts)
 		splits += sim.get_side(side_id).splits
 		if sim.phase != "field":
 			offers += 1
@@ -140,14 +143,29 @@ func _run_combo(cfg: Dictionary, side_id: String, enemy_id: String, form: String
 		"surv_win": float(surv) / wins if wins > 0 else 0.0,
 		"surv_enemy": float(enemy_left) / (runs - wins) if runs > wins else 0.0,
 		# player's general HP left, averaged over wins
-		"e_cast": float(e_casts) / runs,
-		"p_cast": float(p_casts) / runs,
+		"e_cast": _slots_text(e_casts, runs),
+		"p_cast": _slots_text(p_casts, runs),
 		"splits": float(splits) / runs,
 		"duel": float(offers) / runs,
 		"duel_win": ("%d%%" % roundi(100.0 * duel_wins / duels)) if duels > 0 else "-",
 		"ret": float(rets) / runs,
 		"gen_hp": ("%d%%" % roundi(gen_hp / wins * 100.0)) if has_general and wins > 0 else "-",
 	}
+
+
+func _add_slots(acc: Array, slots: Array) -> void:
+	if acc.size() < slots.size():
+		acc.resize(slots.size())
+	for i in slots.size():
+		acc[i] = int(acc[i] if acc[i] != null else 0) + int(slots[i])
+
+
+## Casts per battle by slot, "small/medium/large".
+func _slots_text(acc: Array, runs: int) -> String:
+	var parts: PackedStringArray = []
+	for c in acc:
+		parts.append("%.1f" % (float(c if c != null else 0) / runs))
+	return "/".join(parts) if not parts.is_empty() else "-"
 
 
 func _parse_args(args: PackedStringArray) -> Dictionary:
