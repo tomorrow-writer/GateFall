@@ -272,7 +272,6 @@ func _draw() -> void:
 		_draw_fx(f)
 	_screen_begin()
 	_draw_lane_timer()
-	_draw_general_bars()
 	_draw_banners()
 	_draw_radar()
 	if sim.phase == "offer":
@@ -589,31 +588,6 @@ func _draw_general(u, p: Vector2, fade: float, flash: bool) -> void:
 	else:
 		var tip := hand + (Vector2(f * 18, 3) if u.swing > 0.0 else Vector2(f * 4, -18))
 		draw_line(hand, tip, Color("f0f0ff"), 2.0)
-
-
-## Top-of-field HP bars for both generals (first side on the left).
-func _draw_general_bars() -> void:
-	if sim.time <= 0.0:
-		return  # setup screen: the formation panel sits here
-	var font := ThemeDB.fallback_font
-	for i in sim.sides.size():
-		var g = sim.general_of(sim.sides[i].id)
-		if g == null:
-			continue
-		var w := 120.0
-		var x := 6.0 if i == 0 else SCREEN.x - 6.0 - w
-		var y := 18.0
-		var k := clampf(g.hp / g.max_hp, 0.0, 1.0)
-		draw_rect(Rect2(x - 1, y - 1, w + 2, 6), Color(0, 0, 0, 0.7))
-		var col := Color("e05a4a") if k < 0.3 else HP_FG
-		if i == 0:
-			draw_rect(Rect2(x, y, w * k, 4), col)
-		else:
-			draw_rect(Rect2(x + w * (1.0 - k), y, w * k, 4), col)
-		var label := "แม่ทัพ%s %d" % [_side_label(sim.sides[i].id), maxi(0, ceili(g.hp))]
-		var tw := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 9).x
-		var tx := x if i == 0 else x + w - tw
-		draw_string(font, Vector2(tx, y + 14), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.9))
 
 
 func _side_label(id: String) -> String:
