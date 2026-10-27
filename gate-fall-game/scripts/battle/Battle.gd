@@ -11,6 +11,10 @@
 ##   4 / 5 / 6 = the general's small / medium / large special,
 ##   Space = the largest special ready now, Enter = start / again
 ##   F2 = HD light on/off (bloom, grading, vignette: shaders/hd_post.gdshader)
+##   ` (backquote, left of 1) or the DEV button = dev mode (setup screen):
+##     pick each side's troops from dev.troop_options in the config (e.g.
+##     ranged slime mages). 7 / 8 cycle the player's / enemy's troops (or
+##     click the two buttons). Not F-keys: macOS takes F3-F5 for itself.
 ##   Tab / right-click / click the order box = command menu: the battle pauses
 ##     while it is open (like DF's command window) and it closes on any command
 ## HUD (BattleHud.gd) in the DF layout: general HP at the top corners, clock in
@@ -79,6 +83,11 @@ var _lane_buttons: Array[Button] = []
 var _special_buttons: Array[Button] = []
 ## Command menu open: the sim does not step (DF's pausing command window).
 var menu_open := false
+## Dev mode: troop picks per side (index into cfg.dev.troop_options, -1 = config default).
+@export var dev_mode := false
+var _dev_troops := {}
+var _dev_row: HBoxContainer = null
+var _dev_buttons := {}  # side id -> Button
 
 
 func _ready() -> void:
@@ -144,6 +153,7 @@ func _ready() -> void:
 		formation_list.add_child(b)
 		_formation_buttons[key] = b
 
+	_build_dev_row()
 	view.player_side = player_side
 	hud.view = view
 	hud.player_side = player_side
@@ -209,6 +219,15 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.keycode == KEY_F2:
 		%PostFx.visible = not %PostFx.visible
 		return
+	if phase == "setup" and (event.keycode == KEY_QUOTELEFT or event.physical_keycode == KEY_QUOTELEFT):
+		_toggle_dev()
+		return
+	if phase == "setup" and dev_mode and event.keycode == KEY_7:
+		_cycle_troops(player_side)
+		return
+	if phase == "setup" and dev_mode and event.keycode == KEY_8:
+		_cycle_troops(_enemy_side)
+		return
 	if event.keycode == KEY_TAB:
 		_toggle_menu()
 		return
@@ -273,9 +292,83 @@ func _new_sim() -> void:
 	# The other side is the AI: BattleAI casts, dodges and sends its general in.
 	var overrides := {player_side: {"formation": formation, "order": order, "auto_cast": false},
 			_enemy_side: {"ai": true}}
+	if dev_mode:
+		for id in _dev_troops:
+			var opt := _troop_option(int(_dev_troops[id]))
+			if not opt.is_empty():
+				overrides[id]["units"] = opt.units
 	sim = BattleSim.new(cfg, overrides, BattleRng.new(_seed))
 	view.bind(sim)
 	hud.sim = sim
+
+
+# --- dev mode: swap troop types ---------------------------------------------------
+
+func _troop_option(i: int) -> Dictionary:
+	var opts: Array = cfg.get("dev", {}).get("troop_options", [])
+	return opts[i] if i >= 0 and i < opts.size() else {}
+
+
+## A row under the formation info: [DEV] player troops / enemy troops.
+func _build_dev_row() -> void:
+	if cfg.get("dev", {}).get("troop_options", []).is_empty():
+		return
+	_dev_row = HBoxContainer.new()
+	_dev_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	_dev_row.add_theme_constant_override("separation", 3)
+	var tag := Button.new()
+	tag.text = "DEV [`]"
+	tag.toggle_mode = true
+	tag.focus_mode = Control.FOCUS_NONE
+	tag.add_theme_font_size_override("font_size", 7)
+	tag.add_theme_color_override("font_color", Color("ff9a3c"))
+	tag.add_theme_color_override("font_pressed_color", Color("ff9a3c"))
+	tag.pressed.connect(_toggle_dev)
+	_dev_row.add_child(tag)
+	_dev_buttons["_tag"] = tag
+	for id in [player_side, _enemy_side]:
+		var b := Button.new()
+		b.focus_mode = Control.FOCUS_NONE
+		b.add_theme_font_size_override("font_size", 7)
+		b.pressed.connect(_cycle_troops.bind(id))
+		_dev_row.add_child(b)
+		_dev_buttons[id] = b
+	formation_info.get_parent().add_child(_dev_row)
+	_update_dev_row()
+
+
+func _toggle_dev() -> void:
+	if phase != "setup":
+		return
+	dev_mode = not dev_mode
+	_update_dev_row()
+	_pick_formation(formation)
+
+
+## Next troop option for a side (wraps back to the config default).
+func _cycle_troops(id: String) -> void:
+	if phase != "setup":
+		return
+	var n: int = cfg.get("dev", {}).get("troop_options", []).size()
+	var i := int(_dev_troops.get(id, -1)) + 1
+	_dev_troops[id] = i if i < n else -1
+	_update_dev_row()
+	_pick_formation(formation)
+
+
+func _update_dev_row() -> void:
+	if _dev_row == null:
+		return
+	_dev_row.visible = true  # the DEV button always shows; the troop buttons only in dev mode
+	for id in _dev_buttons:
+		if id == "_tag":
+			_dev_buttons[id].set_pressed_no_signal(dev_mode)
+			continue
+		_dev_buttons[id].visible = dev_mode
+		var opt := _troop_option(int(_dev_troops.get(id, -1)))
+		var who := "เรา" if id == player_side else "ศัตรู"
+		var key := "7" if id == player_side else "8"
+		_dev_buttons[id].text = "%s: %s [%s]" % [who, opt.get("label", "ตามค่าเริ่มต้น"), key]
 
 
 func _start_fight() -> void:

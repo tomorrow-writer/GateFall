@@ -155,6 +155,14 @@ class Unit:
 	var is_general: bool = false
 	var front_take: float = 0.0  # general: own damage-taken x at the front (0 = general_charge.front_take)
 	var flank_sign: int = 1  # -1 = upper half of the formation, +1 = lower (envelop side)
+	## Ranged troops (units.<id>.ranged): {speed, close_range, close_mult,
+	## melee_take, aim_y, arc}. Empty = melee. A ranged unit stands and shoots
+	## from its reach (long, DF style) at the enemy straight ahead (aim_y x the
+	## usual y weight when picking targets, so it keeps to its own row); the
+	## shot lands after distance / speed s. An enemy closer than close_range
+	## gets a weak point-blank hit (close_mult x) instead, and a ranged unit
+	## caught in melee takes melee_take x damage (shots and specials don't).
+	var ranged: Dictionary = {}
 
 
 var cfg: Dictionary
@@ -171,6 +179,9 @@ var phase: String = "field"
 var duel: Dictionary = {}
 var retreated: String = ""  # side id that pulled its general out ("" = none)
 var record_events: bool = true
+## Shots in flight from ranged troops: {by, tgt (unit ids, units[id] is the
+## unit), x0, y0, tx, ty, t, dur, dmg, arc}. BattleView draws them.
+var shots: Array = []
 
 var _events: Array = []
 var _next_id: int = 0
@@ -251,29 +262,36 @@ func _init(config: Dictionary, overrides: Dictionary = {}, shared_rng: BattleRng
 
 	# PROTOTYPE: units spawn interleaved (S0, K0, S1, K1, ...) and each takes
 	# 4 rng draws in this exact order: x, y, attack timer, anim.
+	# Troop types per spot: sides[].unit x count, or an override "units" =
+	# [[type, count], ...] (dev mode: swap or mix troop types). Spots run
+	# front to back, so the first entries stand in front (melee first, then
+	# ranged behind them).
+	var plans: Array = []
 	var spots: Array = []
 	var mid_y: Array = []
 	var max_count := 0
 	for i in sides.size():
 		var sd: Dictionary = cfg.sides[i]
+		var plan := unit_plan(sd, overrides.get(sd.id, {}))
+		plans.append(plan)
 		var formation: Dictionary = cfg.formations[_formation_name(sd, overrides)]
-		var sp: Array = _layout_spots(formation.layout, int(sd.count), sides[i].facing)
+		var sp: Array = _layout_spots(formation.layout, plan.size(), sides[i].facing)
 		spots.append(sp)
 		var sum_y := 0.0
 		for p in sp:
 			sum_y += p[1]
 		mid_y.append(sum_y / maxf(1.0, sp.size()))
-		max_count = maxi(max_count, int(sd.count))
+		max_count = maxi(max_count, plan.size())
 	for n in max_count:
 		for i in sides.size():
 			var sd: Dictionary = cfg.sides[i]
-			if n >= int(sd.count):
+			if n >= plans[i].size():
 				continue
 			var s := sides[i]
 			var spot: Array = spots[i][n]
 			var jx := float(sd.spawn_jitter[0])
 			var jy := float(sd.spawn_jitter[1])
-			var u := _make_unit(s, sd.unit)
+			var u := _make_unit(s, plans[i][n])
 			u.x = spot[0] + float(s.facing) * rng.next() * jx
 			u.y = maxf(float(_field.y_min), minf(float(_field.y_max), spot[1] + rng.next() * jy))
 			u.t = rng.next() * float(_combat.start_cd_jitter)
@@ -396,10 +414,11 @@ func step(dt: float) -> Array:
 		elif u.tg == null or not u.tg.alive or u.re <= 0.0:
 			var best: Unit = null
 			var bd := 1e9
+			var uy_w := y_w * float(u.ranged.get("aim_y", 1)) if not u.ranged.is_empty() else y_w
 			for v in live:
 				if v.side != us and v.alive:
 					var ex := v.x - u.x
-					var ey := (v.y - u.y) * y_w
+					var ey := (v.y - u.y) * uy_w
 					var dd := ex * ex + ey * ey
 					if v.is_general and not u.is_general:
 						dd *= us.general_pull
@@ -427,7 +446,7 @@ func step(dt: float) -> Array:
 			_hold_post(u, dt, move_y)
 			continue
 		# Mobbing a general: take a spot around it rather than piling up in front.
-		var slot = slots.get(u.id) if v.is_general and not u.is_general else null
+		var slot = slots.get(u.id) if v.is_general and not u.is_general and u.ranged.is_empty() else null
 		if slot != null and (d > u.reach or u.t > 0.0):
 			if us.hold_range > 0.0 and d > us.hold_range:
 				u.walking = false
@@ -481,18 +500,18 @@ func step(dt: float) -> Array:
 					dmg *= v.front_take if v.front_take > 0.0 else front_take
 					if not v.side.pending.is_empty():
 						dmg *= channel_take
-				v.hp -= dmg
-				v.fx = hit_flash
-				if u.is_general and us.gen_charge and mp_on_hit > 0.0:
-					us.mp = minf(us.mp_max, us.mp + mp_on_hit)
-				if record_events:
-					_events.append({"type": "hit", "id": v.id, "by": u.id, "x": v.x, "y": v.y,
-							"side": v.side.id, "dmg": dmg})
-				if v.hp <= 0.0:
-					_kill(v)
+				if not u.ranged.is_empty() and d > float(u.ranged.get("close_range", 0)):
+					_fire(u, v, dmg, d)
+				else:
+					if not u.ranged.is_empty():
+						dmg *= float(u.ranged.get("close_mult", 1))
+					if not v.ranged.is_empty():
+						dmg *= float(v.ranged.get("melee_take", 1))
+					_apply_hit(u, v, dmg, hit_flash, mp_on_hit)
 		if u.swing > 0.0:
 			u.swing = maxf(0.0, u.swing - dt)
 
+	_step_shots(dt, float(_combat.hit_flash), mp_on_hit)
 	_separate(live)
 
 	var c := count()
@@ -574,6 +593,61 @@ func dispose() -> void:
 func _clear_targets() -> void:
 	for u in units:
 		u.tg = null
+	shots.clear()
+
+
+## Damage lands on v: HP, flash, MP for a general at the front, hit event, death.
+func _apply_hit(u: Unit, v: Unit, dmg: float, hit_flash: float, mp_on_hit: float) -> void:
+	var us := u.side
+	v.hp -= dmg
+	v.fx = hit_flash
+	if u.is_general and us.gen_charge and mp_on_hit > 0.0:
+		us.mp = minf(us.mp_max, us.mp + mp_on_hit)
+	if record_events:
+		_events.append({"type": "hit", "id": v.id, "by": u.id, "x": v.x, "y": v.y,
+				"side": v.side.id, "dmg": dmg})
+	if v.hp <= 0.0:
+		_kill(v)
+
+
+## A ranged unit looses a shot at v; the damage (worked out now) lands when it
+## arrives, if v is still alive (a shot at a fallen target is wasted).
+func _fire(u: Unit, v: Unit, dmg: float, d: float) -> void:
+	var speed := maxf(1.0, float(u.ranged.get("speed", 160)))
+	shots.append({"by": u.id, "tgt": v.id, "x0": u.x, "y0": u.y, "tx": v.x, "ty": v.y,
+			"t": 0.0, "dur": d / speed, "dmg": dmg, "arc": float(u.ranged.get("arc", 10))})
+	if record_events:
+		_events.append({"type": "shoot", "id": u.id, "tgt": v.id, "x": u.x, "y": u.y, "side": u.side.id})
+
+
+func _step_shots(dt: float, hit_flash: float, mp_on_hit: float) -> void:
+	if shots.is_empty():
+		return
+	var keep: Array = []
+	for sh in shots:
+		var v: Unit = units[sh.tgt]
+		if v.alive:
+			sh.tx = v.x
+			sh.ty = v.y
+		sh.t += dt
+		if sh.t < sh.dur:
+			keep.append(sh)
+		elif v.alive:
+			_apply_hit(units[sh.by], v, float(sh.dmg), hit_flash, mp_on_hit)
+	shots = keep
+
+
+## Troop type per spot for side config sd: override "units" = [[type, count],
+## ...] if given, else sd.unit x sd.count.
+static func unit_plan(sd: Dictionary, ov: Dictionary = {}) -> Array:
+	var out: Array = []
+	var mix: Array = ov.get("units", [])
+	if mix.is_empty():
+		mix = [[sd.unit, int(sd.count)]]
+	for part in mix:
+		for k in int(part[1]):
+			out.append(str(part[0]))
+	return out
 
 
 ## Start one of a side's specials. Returns false if not ready.
@@ -1277,6 +1351,7 @@ func _make_unit(s: Army, type_id: String) -> Unit:
 	u.reach = float(def.reach)
 	u.radius = float(def.radius)
 	u.split = def.get("split", {})
+	u.ranged = def.get("ranged", {})
 	u.is_general = def.get("role", "") == "general"
 	u.front_take = float(def.get("front_take", 0))
 	if def.has("scale_from"):

@@ -22,6 +22,9 @@ const MINI := Color("8be08b")
 const KNIGHT := Color("aab4c8")
 const KNIGHT_DARK := Color("5a6478")
 const PLUME := Color("c8443c")
+const MAGE := Color("5fc9b8")  # slime mage (ranged): teal body, violet orb
+const MAGE_ORB := Color("c98cff")
+const ARCHER := Color("a8b890")  # archer (ranged): leather green over the knight's grey
 const FLASH := Color(1, 1, 1)
 const WAVE := Color(0.45, 1.0, 0.55)
 const HP_BG := Color(0, 0, 0, 0.6)
@@ -298,6 +301,7 @@ func _draw() -> void:
 	for s in sim.sides:
 		if not s.wave.is_empty() and s.special.get("type", "wave") == "charge":
 			_draw_wave(s)
+	_draw_shots()
 	for f in _fx:
 		_draw_fx(f)
 	_screen_begin()
@@ -542,7 +546,7 @@ func _draw_unit(u) -> void:
 		_draw_general_marks(u, p)
 	if not _draw_sprite(u, p, fade, flash, 1.0, true):
 		match u.kind:
-			"big", "mini":
+			"big", "mini", "mage":
 				_draw_slime(u, p, fade, flash)
 			"general":
 				_draw_general(u, p, fade, flash)
@@ -550,7 +554,7 @@ func _draw_unit(u) -> void:
 				_draw_knight(u, p, fade, flash)
 	if u.alive and u.hp < u.max_hp and not u.is_general and _clock - _hurt_at.get(u.id, -99.0) < HURT_BAR_TIME:
 		var w := 14.0 if u.kind != "mini" else 9.0
-		var bar_y := -26.0 if u.kind == "knight" else (-20.0 if u.kind == "big" else -14.0)
+		var bar_y := -26.0 if u.kind in ["knight", "archer"] else (-20.0 if u.kind in ["big", "mage"] else -14.0)
 		if _sprites.has(u.type_id):
 			bar_y = -float(_field_sprite(u.type_id).height) - 2.0
 		var top := p + Vector2(-w / 2.0, bar_y)
@@ -559,9 +563,10 @@ func _draw_unit(u) -> void:
 
 
 func _draw_slime(u, p: Vector2, fade: float, flash: bool) -> void:
-	var big: bool = u.kind == "big"
+	var mage: bool = u.kind == "mage"
+	var big: bool = u.kind == "big" or mage
 	var r := 9.0 if big else 5.5
-	var col := SLIME if big else MINI
+	var col := (MAGE if mage else SLIME) if big else MINI
 	if flash:
 		col = FLASH
 	# Split pieces pop in from their parent
@@ -580,6 +585,12 @@ func _draw_slime(u, p: Vector2, fade: float, flash: bool) -> void:
 	var f: float = _face(u)
 	draw_rect(Rect2(c + Vector2(f * r * 0.25 - 1, -2), Vector2(1.5, 2)), Color(0, 0, 0, fade))
 	draw_rect(Rect2(c + Vector2(f * r * 0.6 - 1, -2), Vector2(1.5, 2)), Color(0, 0, 0, fade))
+	# mage: staff with an orb that glows when it shoots
+	if mage and u.alive:
+		var top := c + Vector2(f * 7, -9)
+		draw_line(c + Vector2(f * 5, 4), top, Color("8a6a4a"), 1.0)
+		draw_circle(top, 2.5 if u.swing > 0.0 else 1.8, MAGE_ORB)
+		return
 	# spear
 	if big and u.alive:
 		var thrust := 5.0 if u.swing > 0.0 else 0.0
@@ -589,7 +600,8 @@ func _draw_slime(u, p: Vector2, fade: float, flash: bool) -> void:
 func _draw_knight(u, p: Vector2, fade: float, flash: bool) -> void:
 	var f: float = _face(u)
 	var bob := absf(sin(u.anim * 8.0)) * 1.5 if u.walking else 0.0
-	var body := KNIGHT if not flash else FLASH
+	var archer: bool = u.kind == "archer"
+	var body := (ARCHER if archer else KNIGHT) if not flash else FLASH
 	var base := p + Vector2(0, -bob)
 	if not u.alive:
 		# fall over
@@ -601,10 +613,43 @@ func _draw_knight(u, p: Vector2, fade: float, flash: bool) -> void:
 	draw_rect(Rect2(base + Vector2(-4, -24), Vector2(8, 7)), body)
 	draw_rect(Rect2(base + Vector2(f * 1 - 1, -22), Vector2(3, 1)), Color(0, 0, 0))
 	draw_rect(Rect2(base + Vector2(-1, -27), Vector2(2, 3)), PLUME)
+	if archer:
+		# bow held out front, string pulled back while shooting
+		var bow := base + Vector2(f * 6, -13)
+		draw_arc(bow, 6.0, -PI / 2.0 if f > 0 else PI / 2.0, PI / 2.0 if f > 0 else PI * 1.5, 8, Color("8a5a2a"), 1.0)
+		var pull := f * (-4.0 if u.swing > 0.0 else 0.0)
+		draw_line(bow + Vector2(0, -6), bow + Vector2(pull, 0), Color(0.9, 0.9, 0.85), 1.0)
+		draw_line(bow + Vector2(pull, 0), bow + Vector2(0, 6), Color(0.9, 0.9, 0.85), 1.0)
+		return
 	# sword: raised normally, swung forward when attacking
 	var hand := base + Vector2(f * 5, -12)
 	var tip := hand + (Vector2(f * 11, 2) if u.swing > 0.0 else Vector2(f * 3, -10))
 	draw_line(hand, tip, Color("e8e8f0"), 1.0)
+
+
+## Shots in flight from ranged troops (sim.shots): an arc from the shooter to
+## its target (following it as it moves). Archer = arrow line, slime mage =
+## glowing blob; colour by the shooter's unit kind.
+func _draw_shots() -> void:
+	for sh in sim.shots:
+		var k := clampf((float(sh.t) - _dt_now() * (1.0 - alpha)) / maxf(0.001, float(sh.dur)), 0.0, 1.0)
+		var a := Vector2(sh.x0, sh.y0 - 12.0)
+		var b := Vector2(sh.tx, sh.ty - 8.0)
+		var lift := float(sh.arc) * 4.0 * k * (1.0 - k)
+		var p := a.lerp(b, k) - Vector2(0, lift)
+		var shooter = sim.units[sh.by]
+		if shooter.kind == "mage":
+			draw_circle(p, 2.5, Color(MAGE_ORB, 0.35))
+			draw_circle(p, 1.5, MAGE_ORB.lightened(0.3))
+		else:
+			var k2 := clampf(k - 0.06, 0.0, 1.0)
+			var q := a.lerp(b, k2) - Vector2(0, float(sh.arc) * 4.0 * k2 * (1.0 - k2))
+			draw_line(q, p, Color(0.95, 0.9, 0.75), 1.0)
+
+
+## Sim step length (s) for smoothing shots between steps.
+func _dt_now() -> float:
+	return 1.0 / float(sim.cfg.sim.steps_per_second)
 
 
 ## Placeholder generals: slime general (green armour, red cape, orb staff) and
