@@ -47,6 +47,8 @@ var _duel_t0 := -1.0  # view clock when the duel started
 var _duel_nums: Array = []  # {side (target), text, t0, col}
 var _bg: Texture2D = null  # field.background from the config (null = drawn placeholder)
 var _bg_path := ""
+var _duel_bg: Texture2D = null  # field.duel_background (null = drawn placeholder)
+var _duel_bg_path := ""
 
 
 func bind(s: BattleSim) -> void:
@@ -598,7 +600,7 @@ func _other_side(id: String) -> String:
 # --- duel close-up -------------------------------------------------------------
 
 const DUEL_X := [165.0, 315.0]  # first side (facing right) on the left
-const DUEL_Y := 205.0
+const DUEL_Y := 214.0  # feet line: centre of the spotlight in the duel background
 const DUEL_SCALE := 2.6  # placeholder generals
 const DUEL_SPRITE_SCALE := 2.0  # sprites: integer scale keeps the pixels square
 
@@ -607,11 +609,19 @@ const DUEL_SPRITE_SCALE := 2.0  # sprites: integer scale keeps the pixels square
 ## attacker lunges on each blow, damage numbers float up, HP bars on top.
 func _draw_duel() -> void:
 	var k := 1.0 if _duel_t0 < 0.0 else clampf((_clock - _duel_t0) / 0.4, 0.0, 1.0)
-	draw_rect(Rect2(0, 0, 480, 270), Color(0.05, 0.05, 0.09, 0.85 * k + 0.1))
-	# spotlight and ground
-	draw_circle(Vector2(240, 300), 210.0, Color(0.95, 0.75, 0.45, 0.10))
-	draw_rect(Rect2(0, DUEL_Y, 480, 270 - DUEL_Y), Color(0.16, 0.13, 0.12))
-	draw_line(Vector2(0, DUEL_Y), Vector2(480, DUEL_Y), Color(0.95, 0.75, 0.45, 0.4), 1.0)
+	var path := str(sim.cfg.field.get("duel_background", ""))
+	if path != _duel_bg_path:
+		_duel_bg_path = path
+		_duel_bg = load(path) as Texture2D if path != "" and ResourceLoader.exists(path) else null
+	if _duel_bg != null:
+		# Painted duel scene (480x270, spotlight centred on DUEL_Y), fading in over the field.
+		draw_texture_rect(_duel_bg, Rect2(0, 0, 480, 270), false, Color(1, 1, 1, k))
+	else:
+		draw_rect(Rect2(0, 0, 480, 270), Color(0.05, 0.05, 0.09, 0.85 * k + 0.1))
+		# spotlight and ground
+		draw_circle(Vector2(240, 300), 210.0, Color(0.95, 0.75, 0.45, 0.10))
+		draw_rect(Rect2(0, DUEL_Y, 480, 270 - DUEL_Y), Color(0.16, 0.13, 0.12))
+		draw_line(Vector2(0, DUEL_Y), Vector2(480, DUEL_Y), Color(0.95, 0.75, 0.45, 0.4), 1.0)
 	var font := ThemeDB.fallback_font
 	for i in sim.sides.size():
 		var s = sim.sides[i]
