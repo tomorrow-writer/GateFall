@@ -666,8 +666,9 @@ func _draw_lane_timer() -> void:
 
 ## A special in its warning time: thin blinking edges round the lane it will
 ## run down (a single lane also gets a faint tint; a full-field special only
-## its edges, so the ground is never washed over), arrows showing which way it
-## comes and a bar for the time left.
+## its edges, so the ground is never washed over) and arrows showing which way
+## it comes. The edges blink faster as it gets close; the time left itself is
+## the gauge on the top banner (_draw_banners), the one place the player reads it.
 func _draw_warning(s) -> void:
 	var p: Dictionary = s.pending
 	var enemy: bool = s.id != player_side
@@ -688,11 +689,14 @@ func _draw_warning(s) -> void:
 		var ax := fposmod(i * 100.0 + _clock * 60.0 * f, 500.0) - 10.0
 		draw_line(Vector2(ax, mid - 5), Vector2(ax + f * 7, mid), Color(col, 0.45), 1.0)
 		draw_line(Vector2(ax, mid + 5), Vector2(ax + f * 7, mid), Color(col, 0.45), 1.0)
-	# time left: bar shrinking along the lane edge
-	draw_rect(Rect2(0, top, 480.0 * (1.0 - k), 2), Color(col, 0.9))
 
 
-## Top banners: special name and countdown while it warms up.
+## Top banners: special name with a gauge for the time left, once the cut-in
+## is over. The gauge shrinks toward the caster's side of the screen (red for
+## the enemy's) and blinks in the last WARN_LAST seconds. In screen space, so
+## it is always in the same place wherever the camera is.
+const WARN_LAST := 0.5
+
 func _draw_banners() -> void:
 	var font := ThemeDB.fallback_font
 	var row := 0
@@ -708,14 +712,27 @@ func _draw_banners() -> void:
 			lane_name = " · เลน" + str(labels[lane])
 		elif lane < 0:
 			lane_name = " · ทั้งสนาม"
-		var text := "%s%s%s  %.1f" % ["! " if enemy else "", s.special.get("label", ""), lane_name,
-				maxf(0.0, float(s.pending.t))]
+		var text := "%s%s%s" % ["! " if enemy else "", s.special.get("label", ""), lane_name]
 		var size := 10
 		var tw := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x
-		var y := 46.0 + row * 14.0
+		var bw := maxf(tw + 10.0, 90.0)
+		var y := 46.0 + row * 18.0
 		var cx := SCREEN.x / 2.0
-		draw_rect(Rect2(cx - tw / 2.0 - 5.0, y - 10.0, tw + 10.0, 13.0), Color(0, 0, 0, 0.6))
-		draw_string(font, Vector2(cx - tw / 2.0, y), text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, col)
+		var box := Rect2(roundf(cx - bw / 2.0), y - 10.0, roundf(bw), 17.0)
+		draw_rect(box, Color(0, 0, 0, 0.6))
+		draw_string(font, Vector2(roundf(cx - tw / 2.0), y), text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, col)
+		# gauge: time left, shrinking toward the caster's side
+		var left := maxf(0.0, float(s.pending.t))
+		var k := clampf(left / maxf(0.001, float(s.pending.total) - CUTIN_TIME), 0.0, 1.0)
+		var gw := box.size.x - 8.0
+		var gy := box.position.y + box.size.y - 4.0
+		draw_rect(Rect2(box.position.x + 4.0, gy, gw, 2), Color(col, 0.2))
+		var a := 0.95
+		if left < WARN_LAST:
+			a = 0.35 + 0.6 * (0.5 + 0.5 * sin(_clock * 40.0))
+		var w := roundf(gw * k)
+		var gx := box.position.x + 4.0 if s.facing > 0 else box.position.x + 4.0 + gw - w
+		draw_rect(Rect2(gx, gy, w, 2), Color(col.lightened(0.2), a))
 		row += 1
 
 
