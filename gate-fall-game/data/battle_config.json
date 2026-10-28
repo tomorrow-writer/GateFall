@@ -131,7 +131,7 @@
     "retreat": { "label": "ถอย",    "atk_mult": 1,    "take_mult": 1,    "mp_regen": 3, "retreat": true, "spd_mult": 1.2 }
   },
 
-  "_formations_note": "Spots are for an army facing right (left side of the field); a side facing left mirrors x as width - x. flank = extra atk when flank_min or more allies hit the same target. Roles toward generals: general_pull (<1 = enemy general counts as closer when picking targets, applied to squared distance), envelop (px troops swing above/below the enemy general), leash (px troops stay within of their own general).",
+  "_formations_note": "Spots are for an army facing right (left side of the field); a side facing left mirrors x as width - x. flank = extra atk when flank_min or more allies hit the same target. Roles toward generals: general_pull (<1 = enemy general counts as closer when picking targets, applied to squared distance), envelop (px troops swing above/below the enemy general), leash (px troops stay within of their own general). Squads (DF style): guard_share > 0 splits the troops: the first (1 - share) stand on layout.spots as the main group (follows the order), the rest on layout.guard_spots as the guard group: it keeps its spot round its general (and follows it when it goes in), fights only enemies within guard_radius px of it and ignores retreat/hold; on duty it hits guard_atk x and takes guard_take x damage (specials too), dug in round the general. set_guard_out (key R) releases the guards to fight like the main group, or calls them back.",
   "formations": {
     "line": {
       "label": "หน้ากระดาน",
@@ -156,6 +156,18 @@
       "role": "โอบ: อ้อมบน-ล่างไปรุมแม่ทัพ",
       "atk": 0.96, "take": 1.08, "spd": 1, "flank": 1.1, "flank_min": 2, "general_pull": 0.6, "envelop": 40,
       "layout": { "type": "arc", "x": 78, "rx": 58, "y": 178, "ry": 56, "angle_start": -1.25, "angle_span": 2.5 }
+    },
+    "offense": {
+      "label": "ทัพรุก",
+      "role": "แบ่งกอง: บุก 70% · คุ้มกันแม่ทัพ 30%",
+      "atk": 1.08, "take": 1, "spd": 1, "guard_share": 0.3, "guard_radius": 90, "guard_atk": 1.15, "guard_take": 0.75,
+      "layout": { "type": "spots", "spots": [[146,122],[146,140],[146,158],[146,176],[146,194],[146,212],[146,230],[128,122],[128,140],[128,158],[128,176],[128,194],[128,212],[128,230],[110,122],[110,140],[110,158],[110,176],[110,194],[110,212],[110,230]], "guard_spots": [[90,149],[90,167],[90,185],[90,203],[74,149],[74,167],[74,185],[74,203],[60,176]] }
+    },
+    "defense": {
+      "label": "ทัพรับ",
+      "role": "แบ่งกอง: บุก 30% · คุ้มกันแม่ทัพ 70%",
+      "atk": 1, "take": 1, "spd": 1, "guard_share": 0.7, "guard_radius": 100, "guard_atk": 1.2, "guard_take": 0.7,
+      "layout": { "type": "spots", "spots": [[140,130],[140,153],[140,176],[140,199],[140,222],[122,141],[122,164],[122,187],[122,210]], "guard_spots": [[96,122],[96,140],[96,158],[96,176],[96,194],[96,212],[96,230],[78,122],[78,140],[78,158],[78,176],[78,194],[78,212],[78,230],[60,122],[60,140],[60,158],[60,176],[60,194],[60,212],[60,230]] }
     }
   },
 

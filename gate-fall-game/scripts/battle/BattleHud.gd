@@ -173,6 +173,8 @@ func _draw_order_box(font: Font) -> void:
 	var label := str(sim.cfg.orders.get(s.order_name, {}).get("label", s.order_name))
 	if s.gen_charge:
 		label += " · แม่ทัพบุก"
+	if s.squads and s.guard_out:
+		label += " · คุ้มกันบุก"
 	_text(font, label, Vector2(ORDER_BOX.position.x, ORDER_BOX.position.y + 12), 9, TRIM_HI, true, ORDER_BOX.size.x - 14, true)
 	# key hint tucked in the right edge of the box
 	_text(font, "Tab", Vector2(ORDER_BOX.position.x, ORDER_BOX.position.y + 11), 6, DIM, false, ORDER_BOX.size.x - 3)

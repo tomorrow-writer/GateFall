@@ -39,6 +39,12 @@
 ##               little worse while crowded (split.crowd_atk). The general does
 ##               not move: it stands at its post (DF style), so a special aimed
 ##               at its lane still hits it.
+##   set_guard_out  squad formations (guard_share > 0) split the troops into a
+##               main group and a guard group. Guards keep their spot round
+##               the general (and follow it when it goes in), fight only
+##               enemies within guard_radius of it and ignore the order
+##               (retreat, hold). Released (on) they fight like the main group;
+##               recalled (off) they walk back. No freeze either way.
 ##   set_general_charge  the general fights at the front like a soldier: gains
 ##               MP per hit (general_charge.mp_on_hit), specials launch from
 ##               the front, but takes front_take x damage out there (and
@@ -90,6 +96,13 @@ class Army:
 	var general_pull: float  # < 1: enemy general looks closer when picking targets
 	var envelop: float  # > 0: troops swing this far above/below an enemy general
 	var leash: float  # > 0: troops won't move farther than this from their general
+	# Squads (formations with guard_share): troops split into the main group
+	# (follows the order) and a guard group that stays round the general.
+	var squads: bool = false
+	var guard_radius: float = 0.0  # guards fight enemies within this of their general
+	var guard_out: bool = false  # guards released: they fight like the main group
+	var guard_atk: float = 1.0  # guards on duty: atk x / damage taken x (dug in)
+	var guard_take: float = 1.0
 	var order_name: String
 	var order_atk: float
 	var order_take: float
@@ -155,6 +168,9 @@ class Unit:
 	var is_general: bool = false
 	var front_take: float = 0.0  # general: own damage-taken x at the front (0 = general_charge.front_take)
 	var flank_sign: int = 1  # -1 = upper half of the formation, +1 = lower (envelop side)
+	var group: int = 0  # 0 = main group, 1 = guard group (squad formations)
+	var gox: float = 0.0  # guard: own spot relative to its general
+	var goy: float = 0.0
 	## Ranged troops (units.<id>.ranged): {speed, close_range, close_mult,
 	## melee_take, aim_y, arc}. Empty = melee. A ranged unit stands and shoots
 	## from its reach (long, DF style) at the enemy straight ahead (aim_y x the
@@ -269,14 +285,16 @@ func _init(config: Dictionary, overrides: Dictionary = {}, shared_rng: BattleRng
 	var plans: Array = []
 	var spots: Array = []
 	var mid_y: Array = []
+	var n_main: Array = []
 	var max_count := 0
 	for i in sides.size():
 		var sd: Dictionary = cfg.sides[i]
 		var plan := unit_plan(sd, overrides.get(sd.id, {}))
 		plans.append(plan)
 		var formation: Dictionary = cfg.formations[_formation_name(sd, overrides)]
-		var sp: Array = _layout_spots(formation.layout, plan.size(), sides[i].facing)
+		var sp: Array = _layout_spots(formation, plan.size(), sides[i].facing)
 		spots.append(sp)
+		n_main.append(plan.size() - _guard_count_for(formation, plan.size()))
 		var sum_y := 0.0
 		for p in sp:
 			sum_y += p[1]
@@ -297,6 +315,8 @@ func _init(config: Dictionary, overrides: Dictionary = {}, shared_rng: BattleRng
 			u.t = rng.next() * float(_combat.start_cd_jitter)
 			u.anim = rng.next() * float(_combat.anim_jitter)
 			u.flank_sign = -1 if spot[1] < mid_y[i] else 1
+			if n >= n_main[i]:
+				u.group = 1
 			units.append(u)
 
 	# Generals spawn after the troops (so configs without generals keep the
@@ -316,6 +336,10 @@ func _init(config: Dictionary, overrides: Dictionary = {}, shared_rng: BattleRng
 		g.anim = rng.next() * float(_combat.anim_jitter)
 		s.general_idx = units.size()
 		units.append(g)
+		for u in units:
+			if u.side == s and u.group == 1:
+				u.gox = u.x - g.x
+				u.goy = u.y - g.y
 
 
 ## Advance the battle by dt seconds. Returns the events since the last step
@@ -402,8 +426,10 @@ func step(dt: float) -> Array:
 		if us.split_lane >= 0 and not u.is_general and _in_lane(us.split_lane, u.y):
 			_step_out_of_lane(u, dt)
 			continue
+		var gmode := _guarding(u)
 		# Retreat moves troops only: a general never turns its back on a fight.
-		if us.retreating and not u.is_general:
+		# Guards stay with their general.
+		if us.retreating and not u.is_general and not gmode:
 			_retreat(u, dt, move_y)
 			continue
 		# A general fights whoever is within its reach, one at a time, before
@@ -411,6 +437,10 @@ func step(dt: float) -> Array:
 		var foe: Unit = _foe_in_reach(u, live) if u.is_general else null
 		if foe != null:
 			u.tg = foe
+		elif gmode:
+			if not _guard_pick(u, live):
+				_to_guard_spot(u, dt, move_y)
+				continue
 		elif u.tg == null or not u.tg.alive or u.re <= 0.0:
 			var best: Unit = null
 			var bd := 1e9
@@ -448,7 +478,7 @@ func step(dt: float) -> Array:
 		# Mobbing a general: take a spot around it rather than piling up in front.
 		var slot = slots.get(u.id) if v.is_general and not u.is_general and u.ranged.is_empty() else null
 		if slot != null and (d > u.reach or u.t > 0.0):
-			if us.hold_range > 0.0 and d > us.hold_range:
+			if us.hold_range > 0.0 and d > us.hold_range and not gmode:
 				u.walking = false
 			else:
 				_to_slot(u, v, float(slot), dt, move_y)
@@ -456,7 +486,7 @@ func step(dt: float) -> Array:
 				continue
 		if d > u.reach:
 			# hold_range keeps troops in place; generals follow their own rules above.
-			if us.hold_range > 0.0 and d > us.hold_range and not u.is_general:
+			if us.hold_range > 0.0 and d > us.hold_range and not u.is_general and not gmode:
 				u.walking = false
 				continue
 			var sp := u.spd * us.form_spd
@@ -495,6 +525,10 @@ func step(dt: float) -> Array:
 					dmg *= float(v.side.guard.take)
 				if us.split_lane >= 0:
 					dmg *= crowd_atk
+				if gmode and us.guard_atk != 1.0:
+					dmg *= us.guard_atk
+				if v.side.guard_take != 1.0 and _guarding(v):
+					dmg *= v.side.guard_take
 				# Out at the front (sent in, or recalled but not back yet).
 				if v.is_general and (v.side.gen_charge or v.side.gen_returning):
 					dmg *= v.front_take if v.front_take > 0.0 else front_take
@@ -582,6 +616,32 @@ func set_general_charge(side_id: String, on: bool) -> void:
 	s.gen_returning = not on
 	if record_events:
 		_events.append({"type": "gcharge", "side": s.id, "on": on})
+
+
+## Squad formations: release the guard group to fight like the main group (on)
+## or call it back to the general (off). Returns false if the side has no squads.
+func set_guard_out(side_id: String, on: bool) -> bool:
+	var s := get_side(side_id)
+	if s == null or not s.squads or over != "" or phase != "field":
+		return false
+	if s.guard_out == on:
+		return true
+	s.guard_out = on
+	if record_events:
+		_events.append({"type": "guard_out", "side": s.id, "on": on})
+	return true
+
+
+## Alive troops of a side by group: Vector2i(main, guard).
+func group_counts(side_id: String) -> Vector2i:
+	var out := Vector2i.ZERO
+	for u in units:
+		if u.alive and not u.is_general and u.side.id == side_id:
+			if u.group == 1:
+				out.y += 1
+			else:
+				out.x += 1
+	return out
 
 
 ## Call if a battle is abandoned before it ends (e.g. player quits).
@@ -763,6 +823,8 @@ func special_damage(s: Army, u: Unit, travelled: float, sp: Dictionary = {}) -> 
 		dmg *= lerpf(1.0, float(sp.get("min_damage_pct", 100)) / 100.0, k)
 	if _special_take:
 		dmg *= u.side.order_take * u.side.form_take
+		if u.side.guard_take != 1.0 and _guarding(u):
+			dmg *= u.side.guard_take
 	if not u.side.guard.is_empty():
 		dmg *= float(u.side.guard.take)
 	return dmg
@@ -1039,16 +1101,79 @@ func _update_troop_centres(live: Array[Unit]) -> void:
 			s.troop_cy /= s.troops
 
 
+const GUARD_LEASH_EXTRA := 20.0  # guards chase this far past guard_radius
+const GUARD_KEEP_EXTRA := 10.0  # a guard keeps a target this far past guard_radius
+
+
+## A guard-group soldier on guard duty (not released, general still up).
+func _guarding(u: Unit) -> bool:
+	if u.group != 1 or u.is_general or u.side.guard_out or u.side.general_idx < 0:
+		return false
+	return units[u.side.general_idx].alive
+
+
+## Guard duty: keep the current target while it stays near the general, else
+## the nearest enemy within guard_radius of it. False (and no target) if none.
+func _guard_pick(u: Unit, live: Array[Unit]) -> bool:
+	var g: Unit = units[u.side.general_idx]
+	var r := u.side.guard_radius
+	var t := u.tg
+	if t != null and t.alive and t.side != u.side \
+			and BattleMath.hypot(t.x - g.x, t.y - g.y) <= r + GUARD_KEEP_EXTRA:
+		return true
+	var best: Unit = null
+	var bd := 1e9
+	for v in live:
+		if not v.alive or v.side == u.side:
+			continue
+		if BattleMath.hypot(v.x - g.x, v.y - g.y) > r:
+			continue
+		var d := BattleMath.hypot(v.x - u.x, v.y - u.y)
+		if d < bd:
+			bd = d
+			best = v
+	u.tg = best
+	return best != null
+
+
+## Guard with nothing to fight: back to its spot round the general.
+func _to_guard_spot(u: Unit, dt: float, move_y: float) -> void:
+	var g: Unit = units[u.side.general_idx]
+	var tx := clampf(g.x + u.gox, float(_field.x_min), float(_field.x_max))
+	var ty := clampf(g.y + u.goy, float(_field.y_min), float(_field.y_max))
+	var dx := tx - u.x
+	var dy := ty - u.y
+	var dist := BattleMath.hypot(dx, dy)
+	if dist < 1.5:
+		u.walking = false
+		return
+	var sp := minf(u.spd * u.side.form_spd, dist / dt)
+	var my := dy * move_y
+	var dm := BattleMath.hypot(dx, my)
+	if dm == 0.0:
+		dm = 1.0
+	u.x += dx / dm * sp * dt
+	var ny := u.y + my / dm * sp * dt
+	if u.side.split_lane >= 0:
+		ny = _keep_out_of_lane(u.side.split_lane, u.y, ny)
+	u.y = ny
+	u.walking = true
+
+
 ## Guard formations: a soldier won't step farther from its general than `leash`
 ## (moving back toward it is always allowed).
 func _leashed(u: Unit, nx: float, ny: float) -> bool:
-	if u.side.leash <= 0.0 or u.is_general or u.side.general_idx < 0:
+	var lim := u.side.leash
+	if _guarding(u):
+		var gl := u.side.guard_radius + GUARD_LEASH_EXTRA
+		lim = gl if lim <= 0.0 else minf(lim, gl)
+	if lim <= 0.0 or u.is_general or u.side.general_idx < 0:
 		return false
 	var g: Unit = units[u.side.general_idx]
 	if not g.alive:
 		return false
 	var dn := BattleMath.hypot(nx - g.x, ny - g.y)
-	if dn <= u.side.leash:
+	if dn <= lim:
 		return false
 	return dn > BattleMath.hypot(u.x - g.x, u.y - g.y)
 
@@ -1293,6 +1418,9 @@ func _kill(v: Unit) -> void:
 		m.t = float(sp.first_attack_min) + rng.next() * float(sp.first_attack_jitter)
 		m.anim = rng.next() * float(_combat.anim_jitter)
 		m.flank_sign = v.flank_sign
+		m.group = v.group
+		m.gox = v.gox
+		m.goy = v.goy
 		m.born = float(sp.born_time)
 		m.bx = v.x
 		m.by = v.y
@@ -1385,6 +1513,11 @@ func _apply_formation(s: Army, name: String) -> void:
 	s.general_pull = float(f.get("general_pull", 1))
 	s.envelop = float(f.get("envelop", 0))
 	s.leash = float(f.get("leash", 0))
+	s.squads = float(f.get("guard_share", 0)) > 0.0
+	s.guard_radius = float(f.get("guard_radius", 90))
+	s.guard_atk = float(f.get("guard_atk", 1))
+	s.guard_take = float(f.get("guard_take", 1))
+	s.guard_out = false
 
 
 func _apply_order(s: Army, name: String) -> void:
@@ -1399,7 +1532,30 @@ func _apply_order(s: Army, name: String) -> void:
 	s.hold_range = float(o.get("hold_range", 0))
 
 
-func _layout_spots(layout: Dictionary, n: int, facing: int) -> Array:
+## Guard group size for n troops in formation f (0 = no squads).
+static func _guard_count_for(f: Dictionary, n: int) -> int:
+	var share := float(f.get("guard_share", 0))
+	if share <= 0.0:
+		return 0
+	return clampi(int(round(n * share)), 0, mini(n, f.layout.get("guard_spots", []).size()))
+
+
+## Spawn spots for n troops: the main group's spots (layout.spots / arc), then
+## for squad formations the guard group's (layout.guard_spots).
+func _layout_spots(f: Dictionary, n: int, facing: int) -> Array:
+	var layout: Dictionary = f.layout
+	var ng := _guard_count_for(f, n)
+	var out := _layout_main(layout, n - ng)
+	var gs: Array = layout.get("guard_spots", [])
+	for i in ng:
+		out.append([float(gs[i][0]), float(gs[i][1])])
+	if facing == -1:
+		for p in out:
+			p[0] = float(_field.width) - p[0]
+	return out
+
+
+func _layout_main(layout: Dictionary, n: int) -> Array:
 	# Spots are [x, y] float pairs, not Vector2: Vector2 is 32-bit and would
 	# round the arc positions.
 	var out: Array = []
@@ -1412,7 +1568,4 @@ func _layout_spots(layout: Dictionary, n: int, facing: int) -> Array:
 	else:
 		for i in mini(n, layout.spots.size()):
 			out.append([float(layout.spots[i][0]), float(layout.spots[i][1])])
-	if facing == -1:
-		for p in out:
-			p[0] = float(_field.width) - p[0]
 	return out
