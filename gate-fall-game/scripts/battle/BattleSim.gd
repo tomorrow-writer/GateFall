@@ -39,6 +39,12 @@
 ##               little worse while crowded (split.crowd_atk). The general does
 ##               not move: it stands at its post (DF style), so a special aimed
 ##               at its lane still hits it.
+##   formation_command  the formation's own command (key E): disperse,
+##               raid (the raid group runs along a flank track, field.flank_track
+##               px beyond the top or bottom lane, whichever side has fewer
+##               enemies; only running raiders may use the tracks, enemies
+##               don't chase them there, and a special aimed at the outer lane
+##               covers its track too) or divrush.
 ##   set_guard_out  squad formations (guard_share > 0) split the troops into a
 ##               main group and a guard group. Guards keep their spot round
 ##               the general (and follow it when it goes in), fight only
@@ -109,6 +115,7 @@ class Army:
 	var raiding: bool = false  # raid: the raid group runs round the edge to the enemy general
 	var raid_spd: float = 1.0
 	var raid_atk: float = 1.0  # raiders' atk x against the enemy general
+	var raid_edge: int = -1  # flank track the raid runs along: -1 top, +1 bottom
 	var disperse_atk: float = 1.0  # atk x while dispersed (thin lines)
 	var divs: int = 0  # divrush: divisions in the formation
 	var divs_sent: int = 0  # divisions sent in so far (front one first)
@@ -224,6 +231,7 @@ var _split_cfg: Dictionary
 var _gcharge_cfg: Dictionary
 var _switch_delay: float = 0.0
 var _special_take: bool = false
+var _track: float = 0.0  # field.flank_track: px of flank track above / below the lanes (raiders only)
 
 
 static func load_config(path: String = "res://data/battle_config.json") -> Dictionary:
@@ -258,6 +266,7 @@ func _init(config: Dictionary, overrides: Dictionary = {}, shared_rng: BattleRng
 	_gcharge_cfg = cfg.get("general_charge", {})
 	_switch_delay = float(cfg.get("commands", {}).get("switch_delay", 0))
 	_special_take = bool(_combat.get("special_take_mult", false))
+	_track = float(_field.get("flank_track", 0))
 	var brain_seed := rng.state
 
 	for i in cfg.sides.size():
@@ -444,7 +453,7 @@ func step(dt: float) -> Array:
 		if u.is_general and not us.pending.is_empty():
 			u.walking = false
 			continue
-		if us.split_lane >= 0 and not u.is_general and _in_lane(us.split_lane, u.y):
+		if us.split_lane >= 0 and not u.is_general and not u.running and _in_lane(us.split_lane, u.y):
 			_step_out_of_lane(u, dt)
 			continue
 		var gmode := _guarding(u)
@@ -694,8 +703,10 @@ func formation_command(side_id: String) -> bool:
 			return true
 		"raid":
 			s.raiding = not s.raiding
+			if s.raiding:
+				s.raid_edge = _quiet_edge(s)
 			if record_events:
-				_events.append({"type": "raid", "side": s.id, "on": s.raiding})
+				_events.append({"type": "raid", "side": s.id, "on": s.raiding, "edge": s.raid_edge})
 			return true
 		"divrush":
 			if s.divs_sent >= s.divs:
@@ -705,6 +716,23 @@ func formation_command(side_id: String) -> bool:
 				_events.append({"type": "divrush", "side": s.id, "sent": s.divs_sent})
 			return true
 	return false
+
+
+## The flank (-1 top, +1 bottom) with fewer enemy troops in its outer lane:
+## the raid goes round that way. Ties: top.
+func _quiet_edge(s: Army) -> int:
+	if _lanes <= 0:
+		return -1
+	var top := 0
+	var bottom := 0
+	for u in units:
+		if u.alive and not u.is_general and u.side != s:
+			var ln := lane_of(u.y)
+			if ln == 0:
+				top += 1
+			elif ln == _lanes - 1:
+				bottom += 1
+	return 1 if bottom < top else -1
 
 
 ## Alive troops of a side in group gid.
@@ -1240,7 +1268,11 @@ func _raid_run(u: Unit, eg: Unit, dt: float, move_y: float) -> bool:
 	u.running = ahead > RAID_TURN
 	if not u.running:
 		return false
-	var edge := float(_field.y_min) + 4.0 if u.flank_sign < 0 else float(_field.y_max) - 4.0
+	# the middle of the flank track on the raid's side (inside the field
+	# edge when the config has no track)
+	var edge := float(_field.y_min) - _track * 0.5 if u.side.raid_edge < 0 else float(_field.y_max) + _track * 0.5
+	if _track <= 0.0:
+		edge = float(_field.y_min) + 4.0 if u.side.raid_edge < 0 else float(_field.y_max) - 4.0
 	var tx := eg.x - f * RAID_TURN * 0.5
 	var dx := tx - u.x
 	var dy := (edge - u.y) * 2.0  # get to the edge first
@@ -1250,7 +1282,7 @@ func _raid_run(u: Unit, eg: Unit, dt: float, move_y: float) -> bool:
 	if dm == 0.0:
 		dm = 1.0
 	u.x += dx / dm * sp * dt
-	u.y = clampf(u.y + my / dm * sp * dt, float(_field.y_min), float(_field.y_max))
+	u.y = clampf(u.y + my / dm * sp * dt, float(_field.y_min) - _track, float(_field.y_max) + _track)
 	u.walking = true
 	return true
 
@@ -1542,7 +1574,13 @@ func _step_wave(s: Army, dt: float, live: Array[Unit]) -> void:
 	var block := float(sp.get("block_pct", 0)) / 100.0
 	for u in live:
 		if u.side != s and u.alive and not w.hit.has(u.id):
-			if u.y < y0 or u.y > y1:
+			# The outer lanes own the flank tracks beyond them: a raider on its
+			# run there is hit by a special down that lane (nobody else uses
+			# the tracks, so nobody else is affected).
+			var uy := u.y
+			if u.running:
+				uy = clampf(uy, float(_field.y_min), float(_field.y_max))
+			if uy < y0 or uy > y1:
 				continue
 			# Wave coordinates run from the caster's edge of the field.
 			var lx := u.x if s.facing == 1 else width - u.x
@@ -1631,7 +1669,9 @@ func _separate(live: Array[Unit]) -> void:
 				a.y -= dy / d * p * wa
 				b.x += dx / d * p * wb
 				b.y += dy / d * p * wb
-		a.y = maxf(y_min, minf(y_max, a.y))
+		# only raiders on their run may use the flank tracks
+		var ty := _track if a.running else 0.0
+		a.y = maxf(y_min - ty, minf(y_max + ty, a.y))
 		a.x = maxf(x_min, minf(x_max, a.x))
 
 

@@ -7,7 +7,7 @@
     "seed": 1
   },
 
-  "_field_note": "background = 480x270 image behind the battle; the 320x180 camera shows y 76-256 of it, so it is mostly ground. field_<name>.png come from tools/make_ground.py (DF-style plain ground: steppe, grass, hall; battle_plains_dusk.png is the older painted one) (horizon at y 104, ground y 104-240, darker HUD strip below); duel_background = painted 480x270 image for the generals' duel (spotlight centred on y 214, where the generals stand, top corners kept dark for the HP bars). Leave either out to get the drawn placeholder.",
+  "_field_note": "background = 480x270 image behind the battle; the 320x180 camera shows y 76-256 of it, so it is mostly ground. field_<name>.png come from tools/make_ground.py (DF-style plain ground: steppe, grass, hall; battle_plains_dusk.png is the older painted one) (horizon at y 104, ground y 104-252, darker HUD strip below); duel_background = painted 480x270 image for the generals' duel (spotlight centred on y 214, where the generals stand, top corners kept dark for the HP bars). Leave either out to get the drawn placeholder. flank_track = px of flank track above the top lane and below the bottom lane (y 106-118 and 232-244): only raiders on their run use it; ground now runs to y 252 so the bottom track sits on ground.",
   "field": {
     "background": "res://assets/backgrounds/field_steppe.png",
     "duel_background": "res://assets/backgrounds/duel_plains_dusk.png",
@@ -15,7 +15,8 @@
     "x_min": 10,
     "x_max": 470,
     "y_min": 118,
-    "y_max": 232
+    "y_max": 232,
+    "flank_track": 12
   },
 
   "combat": {
@@ -178,7 +179,7 @@
     "raid": {
       "label": "จู่โจมอ้อม",
       "role": "กองจู่โจม 70% เดินตามคำสั่ง · คุ้มกัน 30% · [E] แยกอ้อมขอบสนามไปตีแม่ทัพศัตรู",
-      "atk": 1.08, "take": 1, "spd": 1, "command": "raid", "raid_spd": 1.5, "raid_atk": 1.5,
+      "atk": 1.08, "take": 1, "spd": 1, "command": "raid", "raid_spd": 1.42, "raid_atk": 1.5,
       "guard_radius": 90, "guard_atk": 1.15, "guard_take": 0.75,
       "layout": { "type": "spots", "groups": [
         { "role": "raid", "share": 0.7, "spots": [[146,122],[146,140],[146,158],[146,176],[146,194],[146,212],[146,230],[128,122],[128,140],[128,158],[128,176],[128,194],[128,212],[128,230],[110,122],[110,140],[110,158],[110,176],[110,194],[110,212],[110,230]] },

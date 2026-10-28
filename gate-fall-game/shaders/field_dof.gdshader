@@ -1,14 +1,15 @@
 // Depth of field for the battlefield ground only (the troops stay sharp):
 // the image is crisp pixel art across the lanes and goes soft toward the
 // horizon (far) and the bottom edge (near), like a lens focused on the fight.
-// Used by BattleView's Ground sprite (480x270 field image, lanes y 118-232).
+// Used by BattleView's Ground sprite (480x270 field image, lanes y 118-232,
+// flank tracks y 106-118 and 232-244 for raids: kept sharp too).
 shader_type canvas_item;
 
 uniform sampler2D tex_sharp : filter_nearest, repeat_disable;
 uniform sampler2D tex_soft : filter_linear, repeat_disable;
 // Image y (0 top .. 1 bottom) where the sharp band starts / ends.
-uniform float focus_top : hint_range(0.0, 1.0) = 0.43;
-uniform float focus_bottom : hint_range(0.0, 1.0) = 0.87;
+uniform float focus_top : hint_range(0.0, 1.0) = 0.39;
+uniform float focus_bottom : hint_range(0.0, 1.0) = 0.91;
 uniform float focus_falloff : hint_range(0.01, 0.5) = 0.12;
 // Blur radius at full strength, in image pixels.
 uniform float blur_radius : hint_range(0.0, 12.0) = 3.0;
