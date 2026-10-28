@@ -208,38 +208,38 @@ func _draw_guard(s) -> void:
 		draw_set_transform(Vector2.ZERO)
 
 
-## A raid on its run: the flank track it uses glows faintly orange from the
-## raiders' rear to the enemy general, with chevrons pointing the way.
+## A raid on its run: each flank track in use glows faintly orange from the
+## rearmost raider on it to the enemy general, with chevrons pointing the way.
 func _draw_flank_track(s) -> void:
 	var track := float(sim.cfg.field.get("flank_track", 0))
 	if track <= 0.0:
-		return
-	var x0 := INF
-	var x1 := -INF
-	for u in sim.units:
-		if u.alive and u.running and u.side == s:
-			x0 = minf(x0, u.x)
-			x1 = maxf(x1, u.x)
-	if x0 == INF:
 		return
 	var eg = null
 	for o in sim.sides:
 		if o != s:
 			eg = sim.general_of(o.id)
-	if eg != null:
-		x0 = minf(x0, eg.x)
-		x1 = maxf(x1, eg.x)
 	var f: Dictionary = sim.cfg.field
-	var y0: float = float(f.y_min) - track if s.raid_edge < 0 else float(f.y_max)
-	var col := Color(1.0, 0.6, 0.24, 0.16 + 0.06 * sin(_clock * 5.0))
-	draw_rect(Rect2(x0, y0, x1 - x0, track), col)
-	var dir := float(s.facing)
-	var cy := y0 + track * 0.5
-	var x := x0 + fmod(_clock * 30.0, 16.0) if dir > 0 else x1 - fmod(_clock * 30.0, 16.0)
-	while x > x0 and x < x1:
-		draw_polyline(PackedVector2Array([Vector2(x - 2 * dir, cy - 3), Vector2(x + 1 * dir, cy),
-				Vector2(x - 2 * dir, cy + 3)]), Color(1.0, 0.75, 0.4, 0.45), 1.0)
-		x += 16.0 * dir
+	for top in [true, false]:
+		var x0 := INF
+		var x1 := -INF
+		for u in sim.units:
+			if u.alive and u.flanking and u.side == s and (u.flank_sign < 0) == top:
+				x0 = minf(x0, u.x)
+				x1 = maxf(x1, u.x)
+		if x0 == INF:
+			continue
+		if eg != null:
+			x0 = minf(x0, eg.x)
+			x1 = maxf(x1, eg.x)
+		var y0: float = float(f.y_min) - track if top else float(f.y_max)
+		draw_rect(Rect2(x0, y0, x1 - x0, track), Color(1.0, 0.6, 0.24, 0.16 + 0.06 * sin(_clock * 5.0)))
+		var dir := float(s.facing)
+		var cy := y0 + track * 0.5
+		var x := x0 + fmod(_clock * 30.0, 16.0) if dir > 0 else x1 - fmod(_clock * 30.0, 16.0)
+		while x > x0 and x < x1:
+			draw_polyline(PackedVector2Array([Vector2(x - 2 * dir, cy - 3), Vector2(x + 1 * dir, cy),
+					Vector2(x - 2 * dir, cy + 3)]), Color(1.0, 0.75, 0.4, 0.45), 1.0)
+			x += 16.0 * dir
 
 
 ## Squad formations: a faint mark at the feet of troops at their post, so the
@@ -302,7 +302,7 @@ func _camera_goal() -> float:
 	var rx := 0.0
 	var rn := 0
 	for u in sim.units:
-		if u.alive and u.running and u.side.id == player_side:
+		if u.alive and u.flanking and u.side.id == player_side:
 			rx += _pos(u).x
 			rn += 1
 	if rn > 0:
