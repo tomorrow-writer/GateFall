@@ -42,6 +42,24 @@
 ##   to fight when our troops' HP >= guard_release_adv x theirs (finish them),
 ##   or when our main group is gone while the enemy holds back (else nobody
 ##   moves); call them back when ours fall below guard_recall_adv x theirs.
+##
+## Counter-raid (checked every step with dodging): an enemy raid on the way
+##   -> order retreat (troops head home to the general), and back to the old
+##   order once raiders reach within counter_raid_near px of our general.
+## Formation command (key E for the player, every think_interval s):
+##   disperse: used as a dodge (see Dodging): a special down the middle lane
+##     only -> split to the top / bottom lanes, regroup once it is over.
+##   raid: the raid group fights with the army (follows the order) until
+##     launched; the AI raids only while holding (order hold): after
+##     raid_after s, with at least raid_min raiders left,
+##     never at a general sent into the fight (it is no raid target), when
+##     their general stands clear of the fight (none of our others within
+##     raid_clear px), their troops' centre is at least raid_gap px from it
+##     (their army has left it behind: the way round is open), and our
+##     share of troop HP left is at least raid_adv x theirs (not while
+##     losing the main fight); no recall. Until then the formation fights like ทัพรุก.
+##   divrush: send the first division at once, the next every div_interval s
+##     or as soon as fewer than div_min_alive of the ones sent are standing.
 ## Tuning lives in battle_config.json "ai"; DEFAULTS below fill any gap.
 extends RefCounted
 
@@ -71,6 +89,14 @@ const DEFAULTS := {
 	"guard_persist": 0.6,
 	"guard_release_adv": 1.5,
 	"guard_recall_adv": 0.9,
+	"raid_after": 6.0,
+	"raid_min": 5,
+	"raid_clear": 100.0,
+	"raid_gap": 0.0,
+	"raid_adv": 0.0,
+	"counter_raid_near": 60.0,
+	"div_interval": 5.0,
+	"div_min_alive": 3,
 }
 
 var side_id: String
@@ -89,6 +115,10 @@ var _react := {}  # enemy side id -> sim time to react at
 var _restore_order := ""  # order to go back to after a full-field special
 var _restore_watch := ""  # enemy side whose special we are waiting out
 var _save_slot := -1  # dearer special we are saving MP for, -1 = none
+var _last_div := -1e9  # sim time the last division was sent
+var _regroup_watch := ""  # disperse: enemy side whose middle-lane special we split for
+var _start_hp := {}  # raid: both sides' troop HP at the first look (own, their)
+var _counter_restore := ""  # order to go back to after falling back from a raid ("*" = done)
 
 
 ## opts: {"cast": bool, "dodge": bool, "gcharge": bool, "squads": bool, "seed": int}
@@ -129,6 +159,8 @@ func think(sim, dt: float) -> void:
 		_think_gcharge(sim, s)
 	if do_squads and s.squads:
 		_think_guard(sim, s)
+	if do_squads and s.form_command != "":
+		_think_form_command(sim, s)
 	if do_cast:
 		_think_cast(sim, s)
 
@@ -379,11 +411,50 @@ func _think_dodge(sim, s) -> void:
 		if _react.has(e.id) and sim.time >= float(_react[e.id]):
 			_react.erase(e.id)
 			_react_to(sim, s, e)
+	_think_counter_raid(sim, s)
+	if _regroup_watch != "":
+		var rw = sim.get_side(_regroup_watch)
+		if rw == null or (rw.pending.is_empty() and rw.wave.is_empty()):
+			_regroup_watch = ""
+			if s.dispersed:
+				sim.formation_command(side_id)
 	if _restore_order != "":
 		var w = sim.get_side(_restore_watch)
 		if w == null or (w.pending.is_empty() and w.wave.is_empty()):
 			sim.set_order(side_id, _restore_order)
 			_restore_order = ""
+
+
+## An enemy raid on its way to our general: fall back (order retreat) so our
+## troops get home in time, then turn on the raiders once they are at our
+## general (back to the old order). Guards on duty make it unnecessary.
+func _think_counter_raid(sim, s) -> void:
+	var g = sim.general_of(side_id)
+	if g == null or not g.alive:
+		return
+	var raid_on := false
+	var near := false
+	for e in sim.sides:
+		if e != s and e.raiding:
+			raid_on = true
+	if not raid_on:
+		if _counter_restore != "":
+			sim.set_order(side_id, _counter_restore)
+			_counter_restore = ""
+		return
+	if s.squads and not s.guard_out:
+		return
+	for u in sim.units:
+		if u.alive and u.side != s and u.group == 2 and not u.running \
+				and absf(u.x - g.x) < float(tuning.counter_raid_near) and absf(u.y - g.y) < float(tuning.counter_raid_near):
+			near = true
+	if _counter_restore == "" and not near and _rng.randf() < float(tuning.dodge_skill) * 0.1:
+		if sim.cfg.orders.has("retreat") and s.order_name != "retreat":
+			_counter_restore = s.order_name if _restore_order == "" else _restore_order
+			sim.set_order(side_id, "retreat")
+	elif _counter_restore != "" and near:
+		sim.set_order(side_id, _counter_restore)
+		_counter_restore = "*"  # done: don't fall back again for this raid
 
 
 func _react_to(sim, s, e) -> void:
@@ -400,6 +471,15 @@ func _react_to(sim, s, e) -> void:
 	if lane >= 0:
 		var y0 := float(info.y0)
 		var y1 := float(info.y1)
+		# Disperse formation: a special down the middle lane only -> split the
+		# whole army to the top and bottom lanes instead, regroup after it.
+		var mid: int = sim.lane_count() / 2
+		var mb: Vector2 = sim.lane_bounds(mid)
+		if s.form_command == "disperse" and sim.lane_count() >= 3 and y0 >= mb.x - 1.0 and y1 <= mb.y + 1.0:
+			if not s.dispersed:
+				sim.formation_command(side_id)
+				_regroup_watch = e.id
+			return
 		var exposure := 0.0
 		for u in sim.units:
 			# troops only: the general does not step out of an opened lane
@@ -467,7 +547,7 @@ func _think_guard(sim, s) -> void:
 		if u.alive and not u.is_general:
 			if u.side == s:
 				own += u.hp
-				if u.group == 0:
+				if u.group != 1:
 					main_n += 1
 			else:
 				theirs += u.hp
@@ -480,6 +560,92 @@ func _think_guard(sim, s) -> void:
 			sim.set_guard_out(side_id, true)
 	elif own < theirs * float(tuning.guard_recall_adv) and main_n > 0:
 		sim.set_guard_out(side_id, false)
+
+
+# --- formation command ----------------------------------------------------------
+
+func _think_form_command(sim, s) -> void:
+	match s.form_command:
+		"disperse":
+			# "always" (testing: a player who keeps the wings split all battle)
+			if str(tuning.get("disperse_mode", "react")) == "always" and not s.dispersed:
+				sim.formation_command(side_id)
+		"raid":
+			# only from a standing army (order hold): raiding out of a charge
+			# leaves the general's side outnumbered (sims: 4-48% vs 33%+)
+			if s.hold_range <= 0.0:
+				return
+			if _start_hp.is_empty():
+				_start_hp = {"own": 1.0, "their": 1.0}
+				var a := 0.0
+				var b := 0.0
+				for u in sim.units:
+					if u.alive and not u.is_general:
+						if u.side == s:
+							a += u.hp
+						else:
+							b += u.hp
+				_start_hp = {"own": maxf(1.0, a), "their": maxf(1.0, b)}
+			if s.raiding or sim.time < float(tuning.raid_after):
+				return
+			var eg = null
+			for o in sim.sides:
+				if o != s:
+					eg = sim.general_of(o.id)
+			if eg == null or not eg.alive or eg.side.gen_charge:
+				return  # a general out in the fight is no raid target
+			var raiders := 0
+			var ours: Array = []
+			var theirs: Array = []
+			# "ours" = everyone but the raiders (guards, general): who holds
+			# their army while the raiders slip round
+			for u in sim.units:
+				if not u.alive:
+					continue
+				if u.side == s:
+					if u.group == 2 and not u.is_general:
+						raiders += 1
+					else:
+						ours.append(u)
+				elif not u.is_general:
+					theirs.append(u)
+			if raiders < int(tuning.raid_min):
+				return
+			# not while losing the main fight: pulling the raiders out then
+			# only hands it to them
+			var own_hp := 0.0
+			var their_hp := 0.0
+			for u in sim.units:
+				if u.alive and not u.is_general:
+					if u.side == s:
+						own_hp += u.hp
+					else:
+						their_hp += u.hp
+			# shares of each side's starting troop HP (races differ in HP)
+			if own_hp / float(_start_hp.own) < their_hp / float(_start_hp.their) * float(tuning.raid_adv):
+				return
+			# their general stands clear of the fight...
+			var clear := float(tuning.raid_clear)
+			for u in ours:
+				if absf(u.x - eg.x) + absf(u.y - eg.y) * 0.5 < clear:
+					return
+			# ...and their army has left it far behind (the way round is open)
+			var cx := 0.0
+			for v in theirs:
+				cx += v.x
+			if theirs.is_empty() or absf(cx / theirs.size() - eg.x) >= float(tuning.raid_gap):
+				sim.formation_command(side_id)
+		"divrush":
+			if s.divs_sent >= s.divs:
+				return
+			var alive := 0
+			for u in sim.units:
+				if u.alive and u.side == s and u.group >= 10 and u.group - 10 < s.divs_sent:
+					alive += 1
+			if s.divs_sent == 0 or sim.time - _last_div >= float(tuning.div_interval) \
+					or alive < int(tuning.div_min_alive):
+				if sim.formation_command(side_id):
+					_last_div = sim.time
 
 
 # --- duel offer --------------------------------------------------------------------

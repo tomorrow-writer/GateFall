@@ -39,6 +39,13 @@
 ##               little worse while crowded (split.crowd_atk). The general does
 ##               not move: it stands at its post (DF style), so a special aimed
 ##               at its lane still hits it.
+##   formation_command  the formation's own command (key E): disperse,
+##               raid (the raid group pulls out of any fight, then runs along
+##               the flank tracks, field.flank_track px beyond the top and
+##               bottom lanes: upper half top, lower half bottom; only raiders
+##               may use the tracks, enemies neither chase nor block them
+##               there, and a special aimed at an outer lane covers its track
+##               too) or divrush.
 ##   set_guard_out  squad formations (guard_share > 0) split the troops into a
 ##               main group and a guard group. Guards keep their spot round
 ##               the general (and follow it when it goes in), fight only
@@ -103,6 +110,17 @@ class Army:
 	var guard_out: bool = false  # guards released: they fight like the main group
 	var guard_atk: float = 1.0  # guards on duty: atk x / damage taken x (dug in)
 	var guard_take: float = 1.0
+	# Formation command (formations.<f>.command, key E): "disperse" | "raid" | "divrush" | ""
+	var form_command: String = ""
+	var dispersed: bool = false  # disperse: troops keep to the top / bottom lanes
+	var raiding: bool = false  # raid: the raid group runs round the edge to the enemy general
+	var raid_spd: float = 1.0
+	var raid_atk: float = 1.0  # raiders' atk x against the enemy general
+	var raid_edge: int = 0  # flank tracks the raid uses: -1 top, +1 bottom, 0 both
+	var disperse_atk: float = 1.0  # atk x while dispersed (thin lines)
+	var divs: int = 0  # divrush: divisions in the formation
+	var divs_sent: int = 0  # divisions sent in so far (front one first)
+	var div_radius: float = 60.0  # waiting divisions fight enemies within this of their spot
 	var order_name: String
 	var order_atk: float
 	var order_take: float
@@ -161,6 +179,8 @@ class Unit:
 	var anim: float = 0.0  # animation clock (view only)
 	var alive: bool = true
 	var walking: bool = false
+	var flanking: bool = false  # raider on its raid run (any stage): may leave the lanes
+	var running: bool = false  # ...and out on the flank track: enemies neither chase nor block it
 	var swing: float = 0.0  # attack swing timer (view only)
 	var born: float = 0.0  # spawn-in timer for split pieces (view only)
 	var bx: float = 0.0  # where a split piece came from (view only)
@@ -168,9 +188,13 @@ class Unit:
 	var is_general: bool = false
 	var front_take: float = 0.0  # general: own damage-taken x at the front (0 = general_charge.front_take)
 	var flank_sign: int = 1  # -1 = upper half of the formation, +1 = lower (envelop side)
-	var group: int = 0  # 0 = main group, 1 = guard group (squad formations)
+	## 0 = main group, 1 = guard group, 2 = raid group, 10 + k = division k
+	## (GROUP_* below; squad formations, see formations in the config).
+	var group: int = 0
 	var gox: float = 0.0  # guard: own spot relative to its general
 	var goy: float = 0.0
+	var hx: float = 0.0  # spawn spot (a waiting division holds round it)
+	var hy: float = 0.0
 	## Ranged troops (units.<id>.ranged): {speed, close_range, close_mult,
 	## melee_take, aim_y, arc}. Empty = melee. A ranged unit stands and shoots
 	## from its reach (long, DF style) at the enemy straight ahead (aim_y x the
@@ -209,6 +233,7 @@ var _split_cfg: Dictionary
 var _gcharge_cfg: Dictionary
 var _switch_delay: float = 0.0
 var _special_take: bool = false
+var _track: float = 0.0  # field.flank_track: px of flank track above / below the lanes (raiders only)
 
 
 static func load_config(path: String = "res://data/battle_config.json") -> Dictionary:
@@ -243,6 +268,7 @@ func _init(config: Dictionary, overrides: Dictionary = {}, shared_rng: BattleRng
 	_gcharge_cfg = cfg.get("general_charge", {})
 	_switch_delay = float(cfg.get("commands", {}).get("switch_delay", 0))
 	_special_take = bool(_combat.get("special_take_mult", false))
+	_track = float(_field.get("flank_track", 0))
 	var brain_seed := rng.state
 
 	for i in cfg.sides.size():
@@ -285,16 +311,21 @@ func _init(config: Dictionary, overrides: Dictionary = {}, shared_rng: BattleRng
 	var plans: Array = []
 	var spots: Array = []
 	var mid_y: Array = []
-	var n_main: Array = []
+	var groups: Array = []  # per side: group id per spot index
 	var max_count := 0
 	for i in sides.size():
 		var sd: Dictionary = cfg.sides[i]
 		var plan := unit_plan(sd, overrides.get(sd.id, {}))
 		plans.append(plan)
 		var formation: Dictionary = cfg.formations[_formation_name(sd, overrides)]
-		var sp: Array = _layout_spots(formation, plan.size(), sides[i].facing)
+		var gp := group_plan(formation, plan.size())
+		var sp: Array = _layout_spots(gp, sides[i].facing)
 		spots.append(sp)
-		n_main.append(plan.size() - _guard_count_for(formation, plan.size()))
+		var ids: Array = []
+		for g in gp:
+			for k in int(g[1]):
+				ids.append(int(g[0]))
+		groups.append(ids)
 		var sum_y := 0.0
 		for p in sp:
 			sum_y += p[1]
@@ -315,8 +346,9 @@ func _init(config: Dictionary, overrides: Dictionary = {}, shared_rng: BattleRng
 			u.t = rng.next() * float(_combat.start_cd_jitter)
 			u.anim = rng.next() * float(_combat.anim_jitter)
 			u.flank_sign = -1 if spot[1] < mid_y[i] else 1
-			if n >= n_main[i]:
-				u.group = 1
+			u.group = groups[i][n] if n < groups[i].size() else GROUP_MAIN
+			u.hx = u.x
+			u.hy = u.y
 			units.append(u)
 
 	# Generals spawn after the troops (so configs without generals keep the
@@ -337,7 +369,7 @@ func _init(config: Dictionary, overrides: Dictionary = {}, shared_rng: BattleRng
 		s.general_idx = units.size()
 		units.append(g)
 		for u in units:
-			if u.side == s and u.group == 1:
+			if u.side == s and u.group == GROUP_GUARD:
 				u.gox = u.x - g.x
 				u.goy = u.y - g.y
 
@@ -423,15 +455,31 @@ func step(dt: float) -> Array:
 		if u.is_general and not us.pending.is_empty():
 			u.walking = false
 			continue
-		if us.split_lane >= 0 and not u.is_general and _in_lane(us.split_lane, u.y):
+		if us.split_lane >= 0 and not u.is_general and not u.flanking and _in_lane(us.split_lane, u.y):
 			_step_out_of_lane(u, dt)
 			continue
 		var gmode := _guarding(u)
+		var rmode := _raiding(u)
+		if not rmode:
+			u.running = false
+			u.flanking = false
+		var dmode := us.dispersed and not u.is_general and not gmode and not rmode and _lanes >= 3 \
+				and us.split_lane < 0
+		# Disperse: troops keep out of the middle lane, each to its own side.
+		if dmode and _in_lane(_lanes / 2, u.y):
+			_step_to_side(u, _lanes / 2, dt)
+			continue
 		# Retreat moves troops only: a general never turns its back on a fight.
-		# Guards stay with their general.
-		if us.retreating and not u.is_general and not gmode:
+		# Guards (and waiting divisions) stay at their post; raiders keep going.
+		if us.retreating and not u.is_general and not gmode and not rmode:
 			_retreat(u, dt, move_y)
 			continue
+		# Raid: run along the field edge past the fight, then mob the general.
+		if rmode:
+			var eg := _enemy_general(us)
+			u.tg = eg
+			if _raid_run(u, eg, dt, move_y, live):
+				continue
 		# A general fights whoever is within its reach, one at a time, before
 		# anything else (never stepping out to answer longer reaches).
 		var foe: Unit = _foe_in_reach(u, live) if u.is_general else null
@@ -441,12 +489,15 @@ func step(dt: float) -> Array:
 			if not _guard_pick(u, live):
 				_to_guard_spot(u, dt, move_y)
 				continue
-		elif u.tg == null or not u.tg.alive or u.re <= 0.0:
+		elif rmode:
+			pass
+		elif u.tg == null or not u.tg.alive or u.re <= 0.0 \
+				or (u.tg.running and not _catches(u, u.tg)):
 			var best: Unit = null
 			var bd := 1e9
 			var uy_w := y_w * float(u.ranged.get("aim_y", 1)) if not u.ranged.is_empty() else y_w
 			for v in live:
-				if v.side != us and v.alive:
+				if v.side != us and v.alive and (not v.running or _catches(u, v)):
 					var ex := v.x - u.x
 					var ey := (v.y - u.y) * uy_w
 					var dd := ex * ex + ey * ey
@@ -501,6 +552,8 @@ func step(dt: float) -> Array:
 			var ny := u.y + my / dm * sp * dt
 			if us.split_lane >= 0 and not u.is_general:
 				ny = _keep_out_of_lane(us.split_lane, u.y, ny)
+			if dmode:
+				ny = _keep_out_of_lane(_lanes / 2, u.y, ny)
 			if _leashed(u, nx, ny):
 				u.walking = false
 			else:
@@ -527,6 +580,10 @@ func step(dt: float) -> Array:
 					dmg *= crowd_atk
 				if gmode and us.guard_atk != 1.0:
 					dmg *= us.guard_atk
+				if rmode and v.is_general:
+					dmg *= us.raid_atk
+				if dmode and us.disperse_atk != 1.0:
+					dmg *= us.disperse_atk
 				if v.side.guard_take != 1.0 and _guarding(v):
 					dmg *= v.side.guard_take
 				# Out at the front (sent in, or recalled but not back yet).
@@ -632,12 +689,53 @@ func set_guard_out(side_id: String, on: bool) -> bool:
 	return true
 
 
+## The formation's own command (formations.<f>.command, key E):
+##   disperse: troops split to the top and bottom lanes / regroup (toggle)
+##   raid: the raid group runs round the field edge to the enemy general / back
+##   divrush: send the next division in (front one first; no recall)
+## Returns false if the formation has none (or nothing is left to send).
+func formation_command(side_id: String) -> bool:
+	var s := get_side(side_id)
+	if s == null or over != "" or phase != "field":
+		return false
+	match s.form_command:
+		"disperse":
+			s.dispersed = not s.dispersed
+			if record_events:
+				_events.append({"type": "disperse", "side": s.id, "on": s.dispersed})
+			return true
+		"raid":
+			s.raiding = not s.raiding
+			if s.raiding:
+				s.raid_edge = 0  # both tracks: upper half top, lower half bottom
+			if record_events:
+				_events.append({"type": "raid", "side": s.id, "on": s.raiding, "edge": s.raid_edge})
+			return true
+		"divrush":
+			if s.divs_sent >= s.divs:
+				return false
+			s.divs_sent += 1
+			if record_events:
+				_events.append({"type": "divrush", "side": s.id, "sent": s.divs_sent})
+			return true
+	return false
+
+
+## Alive troops of a side in group gid.
+func group_count(side_id: String, gid: int) -> int:
+	var n := 0
+	for u in units:
+		if u.alive and not u.is_general and u.side.id == side_id and u.group == gid:
+			n += 1
+	return n
+
+
 ## Alive troops of a side by group: Vector2i(main, guard).
 func group_counts(side_id: String) -> Vector2i:
 	var out := Vector2i.ZERO
 	for u in units:
 		if u.alive and not u.is_general and u.side.id == side_id:
-			if u.group == 1:
+			if u.group == GROUP_GUARD:
 				out.y += 1
 			else:
 				out.x += 1
@@ -1101,32 +1199,135 @@ func _update_troop_centres(live: Array[Unit]) -> void:
 			s.troop_cy /= s.troops
 
 
+const GROUP_MAIN := 0
+const GROUP_GUARD := 1
+const GROUP_RAID := 2
+const GROUP_DIV := 10  # + division index
+const GROUP_ROLES := {"main": GROUP_MAIN, "guard": GROUP_GUARD, "raid": GROUP_RAID}
 const GUARD_LEASH_EXTRA := 20.0  # guards chase this far past guard_radius
 const GUARD_KEEP_EXTRA := 10.0  # a guard keeps a target this far past guard_radius
 
 
-## A guard-group soldier on guard duty (not released, general still up).
+## A soldier at its post: a guard on duty (not released, general still up)
+## or a division not sent in yet. Both hold round their post (_post_centre)
+## and only fight enemies that come within _post_radius of it.
 func _guarding(u: Unit) -> bool:
-	if u.group != 1 or u.is_general or u.side.guard_out or u.side.general_idx < 0:
+	if u.is_general or u.side.general_idx < 0 or not units[u.side.general_idx].alive:
 		return false
-	return units[u.side.general_idx].alive
+	if u.group == GROUP_GUARD:
+		return not u.side.guard_out
+	return u.group >= GROUP_DIV and u.group - GROUP_DIV >= u.side.divs_sent
+
+
+func _post_centre(u: Unit) -> Vector2:
+	if u.group == GROUP_GUARD:
+		var g: Unit = units[u.side.general_idx]
+		return Vector2(g.x, g.y)
+	return Vector2(u.hx, u.hy)
+
+
+func _post_radius(u: Unit) -> float:
+	return u.side.guard_radius if u.group == GROUP_GUARD else u.side.div_radius
+
+
+## A raid-group soldier on a raid (enemy general still up).
+func _raiding(u: Unit) -> bool:
+	if u.group != GROUP_RAID or u.is_general or not u.side.raiding:
+		return false
+	return _enemy_general(u.side) != null
+
+
+const RAID_TURN := 36.0  # px short of the enemy general where raiders turn in
+const RAID_CATCH := 0.0  # a running raider can be hit in passing this close (0 = never), not chased
+
+
+func _catches(u: Unit, raider: Unit) -> bool:
+	return absf(raider.x - u.x) < RAID_CATCH and absf(raider.y - u.y) < RAID_CATCH
+
+
+## Raider on the raid: three stages, each upper-half raider to the top track
+## and lower-half one to the bottom track (flank_sign):
+##   1. caught in a fight (an enemy within RAID_CLEAR px): back off toward
+##      its own side first; it can still be hit and blocks / is blocked as usual
+##   2. clear: head out to its track (mostly sideways, a little forward)
+##   3. on the track (running): run along it; enemies don't chase it there and
+##      don't block it (they stand in the lanes), a special down that outer
+##      lane still hits it
+## then turn in at RAID_TURN px from the enemy general and fight as usual.
+## Returns true while still on the way (false = fight the general).
+func _raid_run(u: Unit, eg: Unit, dt: float, move_y: float, live: Array[Unit]) -> bool:
+	var f := float(u.side.facing)
+	var ahead := (eg.x - u.x) * f
+	if ahead <= RAID_TURN:
+		u.flanking = false
+		u.running = false
+		return false
+	u.flanking = true
+	var top := u.flank_sign < 0
+	var edge := float(_field.y_min) - _track * 0.5 if top else float(_field.y_max) + _track * 0.5
+	if _track <= 0.0:
+		edge = float(_field.y_min) + 4.0 if top else float(_field.y_max) - 4.0
+	var on_track := absf(edge - u.y) <= maxf(3.0, _track * 0.5)
+	u.running = on_track
+	var sp := u.spd * u.side.form_spd * u.side.raid_spd
+	var dx := 0.0
+	var dy := 0.0
+	if on_track:
+		dx = (eg.x - f * RAID_TURN * 0.5) - u.x
+		dy = edge - u.y
+	elif _enemy_near(u, live, RAID_CLEAR):
+		dx = -f * 10.0  # pull out of the fight, edging toward the track
+		dy = signf(edge - u.y) * 3.0
+	else:
+		dy = edge - u.y
+		dx = f * absf(dy) * 0.35
+	var my := dy * move_y
+	var dm := BattleMath.hypot(dx, my)
+	if dm == 0.0:
+		dm = 1.0
+	u.x = clampf(u.x + dx / dm * sp * dt, float(_field.x_min), float(_field.x_max))
+	u.y = clampf(u.y + my / dm * sp * dt, float(_field.y_min) - _track, float(_field.y_max) + _track)
+	u.walking = true
+	return true
+
+
+const RAID_CLEAR := 22.0  # a raider this close to an enemy pulls out before heading round
+
+
+func _enemy_near(u: Unit, live: Array[Unit], r: float) -> bool:
+	for v in live:
+		if v.alive and v.side != u.side and absf(v.x - u.x) < r and absf(v.y - u.y) < r:
+			return true
+	return false
+
+
+## Disperse: a soldier inside the middle lane steps out to its own side
+## (flank_sign: upper half of the formation goes up, lower half down).
+func _step_to_side(u: Unit, lane: int, dt: float) -> void:
+	var b := lane_bounds(lane)
+	var m := float(_split_cfg.get("margin", 0)) + 1.0
+	var ty := b.x - m if u.flank_sign < 0 else b.y + m
+	var sp := u.spd * u.side.form_spd * float(_split_cfg.get("speed_mult", 1))
+	var step_y := sp * dt
+	u.y = ty if absf(ty - u.y) <= step_y else u.y + signf(ty - u.y) * step_y
+	u.walking = true
 
 
 ## Guard duty: keep the current target while it stays near the general, else
 ## the nearest enemy within guard_radius of it. False (and no target) if none.
 func _guard_pick(u: Unit, live: Array[Unit]) -> bool:
-	var g: Unit = units[u.side.general_idx]
-	var r := u.side.guard_radius
+	var c := _post_centre(u)
+	var r := _post_radius(u)
 	var t := u.tg
 	if t != null and t.alive and t.side != u.side \
-			and BattleMath.hypot(t.x - g.x, t.y - g.y) <= r + GUARD_KEEP_EXTRA:
+			and BattleMath.hypot(t.x - c.x, t.y - c.y) <= r + GUARD_KEEP_EXTRA:
 		return true
 	var best: Unit = null
 	var bd := 1e9
 	for v in live:
-		if not v.alive or v.side == u.side:
+		if not v.alive or v.side == u.side or (v.running and not _catches(u, v)):
 			continue
-		if BattleMath.hypot(v.x - g.x, v.y - g.y) > r:
+		if BattleMath.hypot(v.x - c.x, v.y - c.y) > r:
 			continue
 		var d := BattleMath.hypot(v.x - u.x, v.y - u.y)
 		if d < bd:
@@ -1138,9 +1339,12 @@ func _guard_pick(u: Unit, live: Array[Unit]) -> bool:
 
 ## Guard with nothing to fight: back to its spot round the general.
 func _to_guard_spot(u: Unit, dt: float, move_y: float) -> void:
-	var g: Unit = units[u.side.general_idx]
-	var tx := clampf(g.x + u.gox, float(_field.x_min), float(_field.x_max))
-	var ty := clampf(g.y + u.goy, float(_field.y_min), float(_field.y_max))
+	var tx := u.hx
+	var ty := u.hy
+	if u.group == GROUP_GUARD:
+		var g: Unit = units[u.side.general_idx]
+		tx = clampf(g.x + u.gox, float(_field.x_min), float(_field.x_max))
+		ty = clampf(g.y + u.goy, float(_field.y_min), float(_field.y_max))
 	var dx := tx - u.x
 	var dy := ty - u.y
 	var dist := BattleMath.hypot(dx, dy)
@@ -1163,19 +1367,26 @@ func _to_guard_spot(u: Unit, dt: float, move_y: float) -> void:
 ## Guard formations: a soldier won't step farther from its general than `leash`
 ## (moving back toward it is always allowed).
 func _leashed(u: Unit, nx: float, ny: float) -> bool:
-	var lim := u.side.leash
-	if _guarding(u):
-		var gl := u.side.guard_radius + GUARD_LEASH_EXTRA
-		lim = gl if lim <= 0.0 else minf(lim, gl)
-	if lim <= 0.0 or u.is_general or u.side.general_idx < 0:
+	if u.is_general or u.side.general_idx < 0:
 		return false
 	var g: Unit = units[u.side.general_idx]
 	if not g.alive:
 		return false
-	var dn := BattleMath.hypot(nx - g.x, ny - g.y)
+	var lim := u.side.leash
+	var c := Vector2(g.x, g.y)
+	if _guarding(u):
+		var gl := _post_radius(u) + GUARD_LEASH_EXTRA
+		if u.group != GROUP_GUARD:
+			lim = gl
+			c = _post_centre(u)
+		else:
+			lim = gl if lim <= 0.0 else minf(lim, gl)
+	if lim <= 0.0:
+		return false
+	var dn := BattleMath.hypot(nx - c.x, ny - c.y)
 	if dn <= lim:
 		return false
-	return dn > BattleMath.hypot(u.x - g.x, u.y - g.y)
+	return dn > BattleMath.hypot(u.x - c.x, u.y - c.y)
 
 
 ## The enemy a general fights right now, or null: its current target while
@@ -1377,7 +1588,13 @@ func _step_wave(s: Army, dt: float, live: Array[Unit]) -> void:
 	var block := float(sp.get("block_pct", 0)) / 100.0
 	for u in live:
 		if u.side != s and u.alive and not w.hit.has(u.id):
-			if u.y < y0 or u.y > y1:
+			# The outer lanes own the flank tracks beyond them: a raider on its
+			# run there is hit by a special down that lane (nobody else uses
+			# the tracks, so nobody else is affected).
+			var uy := u.y
+			if u.flanking:
+				uy = clampf(uy, float(_field.y_min), float(_field.y_max))
+			if uy < y0 or uy > y1:
 				continue
 			# Wave coordinates run from the caster's edge of the field.
 			var lx := u.x if s.facing == 1 else width - u.x
@@ -1421,6 +1638,8 @@ func _kill(v: Unit) -> void:
 		m.group = v.group
 		m.gox = v.gox
 		m.goy = v.goy
+		m.hx = v.hx
+		m.hy = v.hy
 		m.born = float(sp.born_time)
 		m.bx = v.x
 		m.by = v.y
@@ -1445,6 +1664,9 @@ func _separate(live: Array[Unit]) -> void:
 			var b := live[j]
 			if not b.alive:
 				continue
+			# raiders on their run slip past enemies (no shoving either way)
+			if a.side != b.side and (a.running or b.running):
+				continue
 			var mn := a.radius + b.radius
 			# A soldier fighting an enemy general may stand within its reach
 			# (small units would otherwise be held off out of reach).
@@ -1464,7 +1686,9 @@ func _separate(live: Array[Unit]) -> void:
 				a.y -= dy / d * p * wa
 				b.x += dx / d * p * wb
 				b.y += dy / d * p * wb
-		a.y = maxf(y_min, minf(y_max, a.y))
+		# only raiders on their run may use the flank tracks
+		var ty := _track if a.flanking else 0.0
+		a.y = maxf(y_min - ty, minf(y_max + ty, a.y))
 		a.x = maxf(x_min, minf(x_max, a.x))
 
 
@@ -1514,6 +1738,20 @@ func _apply_formation(s: Army, name: String) -> void:
 	s.envelop = float(f.get("envelop", 0))
 	s.leash = float(f.get("leash", 0))
 	s.squads = float(f.get("guard_share", 0)) > 0.0
+	s.divs = 0
+	for g in f.layout.get("groups", []):
+		if str(g.role) == "guard":
+			s.squads = true
+		elif str(g.role) == "div":
+			s.divs += 1
+	s.form_command = str(f.get("command", ""))
+	s.dispersed = false
+	s.raiding = false
+	s.raid_spd = float(f.get("raid_spd", 1))
+	s.raid_atk = float(f.get("raid_atk", 1))
+	s.disperse_atk = float(f.get("disperse_atk", 1))
+	s.divs_sent = 0
+	s.div_radius = float(f.get("div_radius", 60))
 	s.guard_radius = float(f.get("guard_radius", 90))
 	s.guard_atk = float(f.get("guard_atk", 1))
 	s.guard_take = float(f.get("guard_take", 1))
@@ -1540,22 +1778,73 @@ static func _guard_count_for(f: Dictionary, n: int) -> int:
 	return clampi(int(round(n * share)), 0, mini(n, f.layout.get("guard_spots", []).size()))
 
 
-## Spawn spots for n troops: the main group's spots (layout.spots / arc), then
-## for squad formations the guard group's (layout.guard_spots).
-func _layout_spots(f: Dictionary, n: int, facing: int) -> Array:
+## How formation f splits n troops: [[group id, count, spots or layout], ...]
+## in spawn order. layout.groups = [{role: main|guard|raid|div, share, spots}]
+## (div groups are numbered front to back in list order); else guard_share
+## (main on layout.spots / arc, guards on layout.guard_spots); else one group.
+## Counts are share x n rounded, the first group takes the remainder, and no
+## group gets more troops than it has spots (the rest go to the first group).
+static func group_plan(f: Dictionary, n: int) -> Array:
 	var layout: Dictionary = f.layout
+	if layout.has("groups"):
+		var gs: Array = layout.groups
+		var out: Array = []
+		var used := 0
+		var div_k := 0
+		for g in gs:
+			var gid: int
+			if str(g.role) == "div":
+				gid = GROUP_DIV + div_k
+				div_k += 1
+			else:
+				gid = int(GROUP_ROLES.get(str(g.role), GROUP_MAIN))
+			var c := mini(int(round(n * float(g.share))), (g.spots as Array).size())
+			out.append([gid, c, g.spots])
+			used += c
+		out[0][1] = maxi(0, int(out[0][1]) + n - used)
+		return out
 	var ng := _guard_count_for(f, n)
-	var out := _layout_main(layout, n - ng)
-	var gs: Array = layout.get("guard_spots", [])
-	for i in ng:
-		out.append([float(gs[i][0]), float(gs[i][1])])
+	if ng > 0:
+		return [[GROUP_MAIN, n - ng, layout], [GROUP_GUARD, ng, layout.get("guard_spots", [])]]
+	return [[GROUP_MAIN, n, layout]]
+
+
+## Starting spots of formation f for n troops facing right, with their group:
+## [[group id, x, y], ...] (the setup screen draws these as a diagram).
+static func formation_spots(f: Dictionary, n: int) -> Array:
+	var out: Array = []
+	for g in group_plan(f, n):
+		var src = g[2]
+		var pts: Array = []
+		if src is Dictionary:
+			pts = _layout_main(src, int(g[1]))
+		else:
+			for i in int(g[1]):
+				pts.append(src[mini(i, (src as Array).size() - 1)])
+		for p in pts:
+			out.append([int(g[0]), float(p[0]), float(p[1])])
+	return out
+
+
+## Spawn spots for a group plan, in its order (mirrored for a side facing left).
+func _layout_spots(gp: Array, facing: int) -> Array:
+	var out: Array = []
+	for g in gp:
+		var src = g[2]
+		var c := int(g[1])
+		if src is Dictionary:
+			out.append_array(_layout_main(src, c))
+		else:
+			for i in c:
+				var p: Array = src[mini(i, (src as Array).size() - 1)]
+				out.append([float(p[0]), float(p[1])])
 	if facing == -1:
 		for p in out:
 			p[0] = float(_field.width) - p[0]
 	return out
 
 
-func _layout_main(layout: Dictionary, n: int) -> Array:
+static func _layout_main(layout: Dictionary, n: int) -> Array:
 	# Spots are [x, y] float pairs, not Vector2: Vector2 is 32-bit and would
 	# round the arc positions.
 	var out: Array = []

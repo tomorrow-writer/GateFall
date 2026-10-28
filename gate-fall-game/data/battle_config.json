@@ -7,7 +7,7 @@
     "seed": 1
   },
 
-  "_field_note": "background = 480x270 image behind the battle; the 320x180 camera shows y 76-256 of it, so it is mostly ground. field_<name>.png come from tools/make_ground.py (DF-style plain ground: steppe, grass, hall; battle_plains_dusk.png is the older painted one) (horizon at y 104, ground y 104-240, darker HUD strip below); duel_background = painted 480x270 image for the generals' duel (spotlight centred on y 214, where the generals stand, top corners kept dark for the HP bars). Leave either out to get the drawn placeholder.",
+  "_field_note": "background = 480x270 image behind the battle; the 320x180 camera shows y 76-256 of it, so it is mostly ground. field_<name>.png come from tools/make_ground.py (DF-style plain ground: steppe, grass, hall; battle_plains_dusk.png is the older painted one) (horizon at y 104, ground y 104-252, darker HUD strip below); duel_background = painted 480x270 image for the generals' duel (spotlight centred on y 214, where the generals stand, top corners kept dark for the HP bars). Leave either out to get the drawn placeholder. flank_track = px of flank track above the top lane and below the bottom lane (y 106-118 and 232-244): only raiders on their run use it; ground now runs to y 252 so the bottom track sits on ground.",
   "field": {
     "background": "res://assets/backgrounds/field_steppe.png",
     "duel_background": "res://assets/backgrounds/duel_plains_dusk.png",
@@ -15,7 +15,8 @@
     "x_min": 10,
     "x_max": 470,
     "y_min": 118,
-    "y_max": 232
+    "y_max": 232,
+    "flank_track": 12
   },
 
   "combat": {
@@ -131,7 +132,7 @@
     "retreat": { "label": "ถอย",    "atk_mult": 1,    "take_mult": 1,    "mp_regen": 3, "retreat": true, "spd_mult": 1.2 }
   },
 
-  "_formations_note": "Spots are for an army facing right (left side of the field); a side facing left mirrors x as width - x. flank = extra atk when flank_min or more allies hit the same target. Roles toward generals: general_pull (<1 = enemy general counts as closer when picking targets, applied to squared distance), envelop (px troops swing above/below the enemy general), leash (px troops stay within of their own general). Squads (DF style): guard_share > 0 splits the troops: the first (1 - share) stand on layout.spots as the main group (follows the order), the rest on layout.guard_spots as the guard group: it keeps its spot round its general (and follows it when it goes in), fights only enemies within guard_radius px of it and ignores retreat/hold; on duty it hits guard_atk x and takes guard_take x damage (specials too), dug in round the general. set_guard_out (key R) releases the guards to fight like the main group, or calls them back.",
+  "_formations_note": "Spots are for an army facing right (left side of the field); a side facing left mirrors x as width - x. flank = extra atk when flank_min or more allies hit the same target. Roles toward generals: general_pull (<1 = enemy general counts as closer when picking targets, applied to squared distance), envelop (px troops swing above/below the enemy general), leash (px troops stay within of their own general). Squads (DF style): guard_share > 0 splits the troops: the first (1 - share) stand on layout.spots as the main group (follows the order), the rest on layout.guard_spots as the guard group: it keeps its spot round its general (and follows it when it goes in), fights only enemies within guard_radius px of it and ignores retreat/hold; on duty it hits guard_atk x and takes guard_take x damage (specials too), dug in round the general. set_guard_out (key R) releases the guards to fight like the main group, or calls them back. layout.groups = [{role: main|guard|raid|div, share, spots}] splits the troops into any groups (first group takes the rounding remainder; div groups are divisions numbered front to back). command (key E): disperse = troops split to the top / bottom lanes leaving the middle open, again = regroup; raid = the raid group runs along the field edge (raid_spd x) to the enemy general, again = call it back; divrush = send the next division in (waiting divisions hold round their own spot and fight enemies within div_radius, with guard_atk / guard_take).",
   "formations": {
     "line": {
       "label": "หน้ากระดาน",
@@ -168,6 +169,35 @@
       "role": "แบ่งกอง: บุก 30% · คุ้มกันแม่ทัพ 70%",
       "atk": 1, "take": 1, "spd": 1, "guard_share": 0.7, "guard_radius": 100, "guard_atk": 1.2, "guard_take": 0.7,
       "layout": { "type": "spots", "spots": [[140,130],[140,153],[140,176],[140,199],[140,222],[122,141],[122,164],[122,187],[122,210]], "guard_spots": [[96,122],[96,140],[96,158],[96,176],[96,194],[96,212],[96,230],[78,122],[78,140],[78,158],[78,176],[78,194],[78,212],[78,230],[60,122],[60,140],[60,158],[60,176],[60,194],[60,212],[60,230]] }
+    },
+    "spread": {
+      "label": "แตกปีก",
+      "role": "เรียงหน้าแม่ทัพ · [E] แตกขึ้นเลนบน-ล่าง เปิดเลนกลาง / รวมกลับ",
+      "atk": 1, "take": 1, "spd": 1, "command": "disperse",
+      "layout": { "type": "spots", "spots": [[134,128],[134,147],[134,166],[134,185],[134,204],[134,223],[116,128],[116,147],[116,166],[116,185],[116,204],[116,223],[98,128],[98,147],[98,166],[98,185],[98,204],[98,223],[80,128],[80,147],[80,166],[80,185],[80,204],[80,223],[62,128],[62,147],[62,166],[62,185],[62,204],[62,223]] }
+    },
+    "raid": {
+      "label": "จู่โจมอ้อม",
+      "role": "กองจู่โจม 70% เดินตามคำสั่ง · คุ้มกัน 30% · [E] แยกอ้อมขอบสนามไปตีแม่ทัพศัตรู",
+      "atk": 1.08, "take": 1, "spd": 1, "command": "raid", "raid_spd": 1.38, "raid_atk": 1.5,
+      "guard_radius": 90, "guard_atk": 1.15, "guard_take": 0.75,
+      "layout": { "type": "spots", "groups": [
+        { "role": "raid", "share": 0.7, "spots": [[146,122],[146,140],[146,158],[146,176],[146,194],[146,212],[146,230],[128,122],[128,140],[128,158],[128,176],[128,194],[128,212],[128,230],[110,122],[110,140],[110,158],[110,176],[110,194],[110,212],[110,230]] },
+        { "role": "guard", "share": 0.3, "spots": [[90,149],[90,167],[90,185],[90,203],[74,149],[74,167],[74,185],[74,203],[60,176]] }
+      ] }
+    },
+    "divisions": {
+      "label": "ห้ากอง",
+      "role": "4 กองรบ + 1 กองคุ้มกัน · [E] ส่งกองถัดไปเข้ารบทีละกอง",
+      "atk": 1.1, "take": 1, "spd": 1, "command": "divrush", "div_radius": 60,
+      "guard_radius": 90, "guard_atk": 1.15, "guard_take": 0.75,
+      "layout": { "type": "spots", "groups": [
+        { "role": "div", "share": 0.2, "spots": [[146,128],[146,147],[146,166],[146,185],[146,204],[146,223]] },
+        { "role": "div", "share": 0.2, "spots": [[128,128],[128,147],[128,166],[128,185],[128,204],[128,223]] },
+        { "role": "div", "share": 0.2, "spots": [[110,128],[110,147],[110,166],[110,185],[110,204],[110,223]] },
+        { "role": "div", "share": 0.2, "spots": [[92,128],[92,147],[92,166],[92,185],[92,204],[92,223]] },
+        { "role": "guard", "share": 0.2, "spots": [[76,158],[76,176],[76,194],[62,158],[62,176],[62,194]] }
+      ] }
     }
   },
 
@@ -312,7 +342,8 @@
     "duel_retreat_ratio": 1.5,
     "save_ratio": 0.85,
     "guard_min_value": 1.2,
-    "guard_persist": 0.6
+    "guard_persist": 0.6,
+    "div_interval": 2.5
   },
 
   "_sprites_note": "Sprite size standard (pixels at the 480x270 game resolution, shown x3 at 1440x810, x4 at 1080p): troops 32x32 frames, small slime 16x16, generals 48x48. Generals in the duel close-up are drawn at x2 (96 px tall). On the battlefield generals use their optional \"field\" strips (~34 px tall, made by tools/make_field_sprites.py from the 48 px strips) so they stand at troop scale like Dragon Force instead of towering over the troops; \"field\" takes dir/frame/foot/height and reuses the anims list. Strips: <dir>/<anim>.png, frames left to right, facing RIGHT. foot = frame pixel that stands on the ground; height = px above the feet for HP bars. Units without sprites use the placeholder shapes. The PNGs in assets/units are placeholders from tools/make_placeholder_sprites.py: replace them with real art of the same frame size.",

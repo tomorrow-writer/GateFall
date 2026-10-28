@@ -195,7 +195,7 @@ text = "ท่า [6]"
 layout_mode = 2
 theme_override_colors/font_color = Color(0.75, 0.73, 0.68, 1)
 theme_override_font_sizes/font_size = 7
-text = "ท่าพิเศษ 4 เล็ก · 5 กลาง · 6 ใหญ่ · Space = ใหญ่สุดที่ใช้ได้ · R = กองคุ้มกัน\nTab / คลิกขวา = ปิด · ปุ่มลัดใช้ได้ตลอด"
+text = "ท่าพิเศษ 4 เล็ก · 5 กลาง · 6 ใหญ่ · Space = ใหญ่สุดที่ใช้ได้ · R = กองคุ้มกัน · E = คำสั่งรูปขบวน\nTab / คลิกขวา = ปิด · ปุ่มลัดใช้ได้ตลอด"
 horizontal_alignment = 1
 
 [node name="SetupPanel" type="PanelContainer" parent="Hud/Root"]

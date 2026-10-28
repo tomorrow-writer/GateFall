@@ -16,7 +16,8 @@ const HP_COL := Color("e8d25a")
 const HP_LOW := Color("e05a4a")
 const MP_COL := Color("5fd0ff")
 const MP_READY := Color("8cff9a")
-const ORDER_BOX := Rect2(124, 160, 72, 17)
+## Bottom bars are slim (13 px) so the bottom flank track shows above them.
+const ORDER_BOX := Rect2(124, 165, 72, 13)
 
 var sim = null
 var view = null  # BattleView: sprite strips for the portraits
@@ -135,14 +136,14 @@ func _draw_mp(font: Font, i: int) -> void:
 		return
 	var left := i == 0
 	var w := 116.0
-	var r := Rect2(2 if left else SCREEN.x - 2 - w, 160, w, 17)
+	var r := Rect2(2 if left else SCREEN.x - 2 - w, 165, w, 13)
 	_frame(r)
 	var k := clampf(s.mp / maxf(1.0, s.mp_max), 0.0, 1.0)
 	var ready: bool = sim.special_ready(s.id)
 	var label := "MP %d" % int(s.mp)
-	_text(font, label, Vector2(r.position.x + 4, r.position.y + 11), 8, TEXT, left, r.size.x - 8)
+	_text(font, label, Vector2(r.position.x + 4, r.position.y + 9.5), 7, TEXT, left, r.size.x - 8)
 	var bx := r.position.x + 40 if left else r.position.x + 4
-	var bar := Rect2(bx, r.position.y + 6, w - 44, 5)
+	var bar := Rect2(bx, r.position.y + 4, w - 44, 4)
 	draw_rect(bar.grow(1), Color(0, 0, 0, 0.8))
 	var col := MP_READY if ready else MP_COL
 	if ready and fmod(_clock, 0.8) < 0.4:
@@ -162,7 +163,7 @@ func _draw_mp(font: Font, i: int) -> void:
 		var gcol := Color(str(s.guard.special.get("color", "8cc8ff")))
 		var gw := bar.size.x * gk
 		var gx := bar.position.x if left else bar.end.x - gw
-		draw_rect(Rect2(gx, bar.end.y + 2, gw, 2), gcol)
+		draw_rect(Rect2(gx, bar.end.y + 1.5, gw, 1.5), gcol)
 
 
 ## Middle of the bottom: the player's current order; click (or Tab) for the menu.
@@ -175,9 +176,15 @@ func _draw_order_box(font: Font) -> void:
 		label += " · แม่ทัพบุก"
 	if s.squads and s.guard_out:
 		label += " · คุ้มกันบุก"
-	_text(font, label, Vector2(ORDER_BOX.position.x, ORDER_BOX.position.y + 12), 9, TRIM_HI, true, ORDER_BOX.size.x - 14, true)
+	if s.dispersed:
+		label += " · แตกปีก"
+	if s.raiding:
+		label += " · จู่โจมอ้อม"
+	if s.form_command == "divrush":
+		label += " · กอง %d/%d" % [s.divs_sent, s.divs]
+	_text(font, label, Vector2(ORDER_BOX.position.x, ORDER_BOX.position.y + 9.5), 8, TRIM_HI, true, ORDER_BOX.size.x - 14, true)
 	# key hint tucked in the right edge of the box
-	_text(font, "Tab", Vector2(ORDER_BOX.position.x, ORDER_BOX.position.y + 11), 6, DIM, false, ORDER_BOX.size.x - 3)
+	_text(font, "Tab", Vector2(ORDER_BOX.position.x, ORDER_BOX.position.y + 9), 6, DIM, false, ORDER_BOX.size.x - 3)
 
 
 ## Text helper: left- or right-aligned (or centred) inside a width, 1 px shadow.

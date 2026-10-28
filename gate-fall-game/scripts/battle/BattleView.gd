@@ -79,6 +79,9 @@ const SCREEN := Vector2(320, 180)
 const CAM_Y := 76.0
 ## How fast the camera catches up (1/s); higher = snappier.
 const CAM_FOLLOW := 2.5
+## A raid running along a flank track: the camera tilts this far up (top
+## track) or down (bottom track) so the raiders show between the HUD bars.
+const RAID_CAM_SHIFT := 12.0
 ## Radar: small map of the whole field, bottom-left above the command bar.
 const RADAR := Rect2(4, 128, 72, 20)
 ## World position of the screen's top-left corner.
@@ -205,14 +208,56 @@ func _draw_guard(s) -> void:
 		draw_set_transform(Vector2.ZERO)
 
 
-## Squad formations: a faint gold mark at the feet of the guard group while it
-## is on duty round the general, so the player can tell the two groups apart.
+## A raid on its run: each flank track in use glows faintly orange from the
+## rearmost raider on it to the enemy general, with chevrons pointing the way.
+func _draw_flank_track(s) -> void:
+	var track := float(sim.cfg.field.get("flank_track", 0))
+	if track <= 0.0:
+		return
+	var eg = null
+	for o in sim.sides:
+		if o != s:
+			eg = sim.general_of(o.id)
+	var f: Dictionary = sim.cfg.field
+	for top in [true, false]:
+		var x0 := INF
+		var x1 := -INF
+		for u in sim.units:
+			if u.alive and u.flanking and u.side == s and (u.flank_sign < 0) == top:
+				x0 = minf(x0, u.x)
+				x1 = maxf(x1, u.x)
+		if x0 == INF:
+			continue
+		if eg != null:
+			x0 = minf(x0, eg.x)
+			x1 = maxf(x1, eg.x)
+		var y0: float = float(f.y_min) - track if top else float(f.y_max)
+		draw_rect(Rect2(x0, y0, x1 - x0, track), Color(1.0, 0.6, 0.24, 0.16 + 0.06 * sin(_clock * 5.0)))
+		var dir := float(s.facing)
+		var cy := y0 + track * 0.5
+		var x := x0 + fmod(_clock * 30.0, 16.0) if dir > 0 else x1 - fmod(_clock * 30.0, 16.0)
+		while x > x0 and x < x1:
+			draw_polyline(PackedVector2Array([Vector2(x - 2 * dir, cy - 3), Vector2(x + 1 * dir, cy),
+					Vector2(x - 2 * dir, cy + 3)]), Color(1.0, 0.75, 0.4, 0.45), 1.0)
+			x += 16.0 * dir
+
+
+## Squad formations: a faint mark at the feet of troops at their post, so the
+## player can tell the groups apart: gold = guards round the general, orange =
+## the raid group (waiting, or on the raid), pale = divisions not sent yet.
 func _draw_squad_marks(s) -> void:
 	for u in sim.units:
-		if not u.alive or u.side != s or u.is_general or u.group != 1:
+		if not u.alive or u.side != s or u.is_general or u.group == BattleSim.GROUP_MAIN:
 			continue
+		var col := Color(1.0, 0.82, 0.35, 0.35)
+		if u.group == BattleSim.GROUP_RAID:
+			col = Color(1.0, 0.6, 0.24, 0.5 if s.raiding else 0.3)
+		elif not sim._guarding(u):
+			continue  # released guards, divisions sent in: no mark
+		elif u.group >= BattleSim.GROUP_DIV:
+			col = Color(0.85, 0.9, 1.0, 0.3)
 		draw_set_transform(Vector2(u.x, u.y), 0.0, Vector2(1.0, 0.4))
-		draw_arc(Vector2.ZERO, u.radius + 1.0, 0, TAU, 12, Color(1.0, 0.82, 0.35, 0.35), 1.0)
+		draw_arc(Vector2.ZERO, u.radius + 1.0, 0, TAU, 12, col, 1.0)
 		draw_set_transform(Vector2.ZERO)
 
 
@@ -253,7 +298,31 @@ func _camera_goal() -> float:
 		if n > 0:
 			break
 	var cx := sum / float(n) if n > 0 else float(sim.cfg.field.width) / 2.0
+	# the player's raid on its run: follow the raiders instead
+	var rx := 0.0
+	var rn := 0
+	for u in sim.units:
+		if u.alive and u.flanking and u.side.id == player_side:
+			rx += _pos(u).x
+			rn += 1
+	if rn > 0:
+		cx = rx / rn
 	return clampf(cx - SCREEN.x / 2.0, 0.0, float(sim.cfg.field.width) - SCREEN.x)
+
+
+## Camera y: CAM_Y, tilted toward the flank track a raid is running along
+## (the player's raid first, else the enemy's).
+func _camera_goal_y() -> float:
+	var edge := 0
+	for s in sim.sides:
+		if not s.raiding:
+			continue
+		for u in sim.units:
+			if u.alive and u.running and u.side == s:
+				if edge == 0 or s.id == player_side:
+					edge = s.raid_edge
+				break
+	return CAM_Y + RAID_CAM_SHIFT * edge
 
 
 func _update_camera(delta: float) -> void:
@@ -264,12 +333,14 @@ func _update_camera(delta: float) -> void:
 		position = Vector2.ZERO  # the duel close-up is drawn in screen space
 		return
 	var goal := _camera_goal()
+	var goal_y := _camera_goal_y()
 	if not _cam_ready:
 		cam.x = goal
+		cam.y = goal_y
 		_cam_ready = true
 	else:
 		cam.x = lerpf(cam.x, goal, 1.0 - exp(-CAM_FOLLOW * delta))
-	cam.y = CAM_Y
+		cam.y = lerpf(cam.y, goal_y, 1.0 - exp(-CAM_FOLLOW * delta))
 	position = -cam
 
 
@@ -297,7 +368,9 @@ func _draw() -> void:
 			_draw_warning(s)
 		if not s.guard.is_empty():
 			_draw_guard(s)
-		if s.squads and not s.guard_out:
+		if s.raiding:
+			_draw_flank_track(s)
+		if s.squads or s.form_command != "":
 			_draw_squad_marks(s)
 	# Wave behind the units (a cavalry charge rides over them, drawn below)
 	for s in sim.sides:
@@ -797,6 +870,13 @@ func _draw_warning(s) -> void:
 	var col := DANGER if enemy else _special_color(s)
 	var top := maxf(108.0, float(p.y0))
 	var bot := minf(240.0, float(p.y1))
+	# a special down an outer lane also covers that side's flank track
+	var track := float(sim.cfg.field.get("flank_track", 0))
+	if track > 0.0 and int(p.get("lane", -1)) >= 0:
+		if float(p.y0) <= float(sim.cfg.field.y_min) + 0.5:
+			top = float(sim.cfg.field.y_min) - track
+		if float(p.y1) >= float(sim.cfg.field.y_max) - 0.5:
+			bot = float(sim.cfg.field.y_max) + track
 	var k := 1.0 - float(p.t) / maxf(0.001, float(p.total))  # 0 -> 1
 	var blink := 0.5 + 0.5 * sin(_clock * (10.0 + k * 14.0))
 	if int(p.get("lane", -1)) >= 0:

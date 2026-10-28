@@ -4,7 +4,7 @@ coloured ground that fills the screen (the camera only shows y 76-256 of it),
 a thin far horizon under the top HUD, light texture so the troops read clearly.
 
 Original art, generated: no source images. 480x270 like every background
-(horizon at y 104, ground to y 240, dark strip below for the bottom HUD).
+(horizon at y 104, ground to y 252 so the bottom flank track sits on ground, dark strip below for the bottom HUD).
 
     python3 tools/make_ground.py                 # every palette
     python3 tools/make_ground.py grass           # one palette
@@ -24,7 +24,7 @@ from PIL import Image
 
 W, H = 480, 270
 HORIZON = 104
-GROUND_END = 240
+GROUND_END = 252
 
 PALETTES = {
     # deep meadow: darker than the slimes, cooler than dirt
