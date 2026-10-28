@@ -81,6 +81,7 @@ var _formation_buttons := {}
 var _order_buttons := {}
 var _lane_buttons: Array[Button] = []
 var _special_buttons: Array[Button] = []
+var _guard_btn: Button = null  # squad formations: release / recall the guard group [R]
 ## Command menu open: the sim does not step (DF's pausing command window).
 var menu_open := false
 ## Dev mode: troop picks per side (index into cfg.dev.troop_options, -1 = config default).
@@ -132,6 +133,13 @@ func _ready() -> void:
 
 	general_btn.toggle_mode = true
 	general_btn.pressed.connect(_toggle_general)
+	_guard_btn = Button.new()
+	_guard_btn.toggle_mode = true
+	_guard_btn.focus_mode = Control.FOCUS_NONE
+	_guard_btn.add_theme_font_size_override("font_size", 8)
+	_guard_btn.tooltip_text = "[R] ส่งกองคุ้มกันออกบุก / เรียกกลับมาคุ้มกันแม่ทัพ"
+	_guard_btn.pressed.connect(_toggle_guard)
+	general_btn.get_parent().add_child(_guard_btn)
 	for i in special_row.get_child_count():
 		var b: Button = special_row.get_child(i)
 		b.pressed.connect(_cast_special.bind(i))
@@ -249,6 +257,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			_split(2)
 		KEY_G:
 			_toggle_general()
+		KEY_R:
+			_toggle_guard()
 		KEY_4:
 			_cast_special(0)
 		KEY_5:
@@ -461,6 +471,16 @@ func _toggle_general() -> void:
 	_close_menu()
 
 
+## Squad formations: release the guard group or call it back.
+func _toggle_guard() -> void:
+	if phase != "fight" or sim == null:
+		return
+	var s := sim.get_side(player_side)
+	if s.squads:
+		sim.set_guard_out(player_side, not s.guard_out)
+	_close_menu()
+
+
 ## slot 0 small, 1 medium, 2 large; -1 = the largest one ready.
 func _cast_special(slot: int) -> void:
 	if phase != "fight" or sim == null:
@@ -522,6 +542,12 @@ func _update_hud() -> void:
 	general_btn.set_pressed_no_signal(s.gen_charge)
 	var gc: Dictionary = cfg.get("general_charge", {})
 	general_btn.text = ("กลับ" if s.gen_charge else str(gc.get("short_label", "ลงสนาม")))
+	_guard_btn.visible = s.squads
+	if s.squads:
+		var gn := sim.group_counts(player_side).y
+		_guard_btn.disabled = not field or gn == 0
+		_guard_btn.set_pressed_no_signal(s.guard_out)
+		_guard_btn.text = ("คุ้มกันกลับ ×%d [R]" if s.guard_out else "คุ้มกันบุก ×%d [R]") % gn
 
 
 func _side_label(id: String) -> String:
@@ -535,6 +561,9 @@ func _formation_text(f: Dictionary) -> String:
 	var t := "ตี ×%s   รับดาเมจ ×%s   ความเร็ว ×%s" % [_num(f.atk), _num(f.take), _num(f.spd)]
 	if f.has("role"):
 		t = f.role + "\n" + t
+	if float(f.get("guard_share", 0)) > 0.0:
+		t += "\nกองคุ้มกันอยู่รอบแม่ทัพ ตีศัตรูที่เข้ามาใกล้ (ตี ×%s รับดาเมจ ×%s) · [R] ส่งออกบุก/เรียกกลับ" % [
+				_num(f.get("guard_atk", 1)), _num(f.get("guard_take", 1))]
 	if f.has("flank"):
 		t += "   ·   รุม %d ตัวขึ้นไป ตี ×%s" % [int(f.get("flank_min", 2)), _num(f.flank)]
 	return t

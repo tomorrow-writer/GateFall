@@ -205,6 +205,17 @@ func _draw_guard(s) -> void:
 		draw_set_transform(Vector2.ZERO)
 
 
+## Squad formations: a faint gold mark at the feet of the guard group while it
+## is on duty round the general, so the player can tell the two groups apart.
+func _draw_squad_marks(s) -> void:
+	for u in sim.units:
+		if not u.alive or u.side != s or u.is_general or u.group != 1:
+			continue
+		draw_set_transform(Vector2(u.x, u.y), 0.0, Vector2(1.0, 0.4))
+		draw_arc(Vector2.ZERO, u.radius + 1.0, 0, TAU, 12, Color(1.0, 0.82, 0.35, 0.35), 1.0)
+		draw_set_transform(Vector2.ZERO)
+
+
 ## Special's "color" from the config, light green if unset.
 func _special_color(s) -> Color:
 	if s == null or s.special.is_empty():
@@ -286,6 +297,8 @@ func _draw() -> void:
 			_draw_warning(s)
 		if not s.guard.is_empty():
 			_draw_guard(s)
+		if s.squads and not s.guard_out:
+			_draw_squad_marks(s)
 	# Wave behind the units (a cavalry charge rides over them, drawn below)
 	for s in sim.sides:
 		if not s.wave.is_empty() and s.special.get("type", "wave") != "charge":

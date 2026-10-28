@@ -37,6 +37,11 @@
 ##   call it back when troops fall below return_adv x. A hurt general is never
 ##   called back (it stands and takes the hits), and a recalled one only walks
 ##   back once nobody is fighting it (BattleSim._foe_in_reach).
+##
+## Guard group (squad formations, every think_interval s): release the guards
+##   to fight when our troops' HP >= guard_release_adv x theirs (finish them),
+##   or when our main group is gone while the enemy holds back (else nobody
+##   moves); call them back when ours fall below guard_recall_adv x theirs.
 ## Tuning lives in battle_config.json "ai"; DEFAULTS below fill any gap.
 extends RefCounted
 
@@ -64,6 +69,8 @@ const DEFAULTS := {
 	"save_ratio": 0.8,
 	"guard_min_value": 2.0,
 	"guard_persist": 0.6,
+	"guard_release_adv": 1.5,
+	"guard_recall_adv": 0.9,
 }
 
 var side_id: String
@@ -71,6 +78,7 @@ var tuning: Dictionary
 var do_cast := true
 var do_dodge := false
 var do_gcharge := false
+var do_squads := true
 ## Why the last cast happened ("value", "full_mp", "danger"), for debugging/tools.
 var last_reason := ""
 
@@ -83,13 +91,14 @@ var _restore_watch := ""  # enemy side whose special we are waiting out
 var _save_slot := -1  # dearer special we are saving MP for, -1 = none
 
 
-## opts: {"cast": bool, "dodge": bool, "gcharge": bool, "seed": int}
+## opts: {"cast": bool, "dodge": bool, "gcharge": bool, "squads": bool, "seed": int}
 func _init(side: String, ai_cfg: Dictionary = {}, opts: Dictionary = {}) -> void:
 	side_id = side
 	tuning = merged(ai_cfg)
 	do_cast = bool(opts.get("cast", true))
 	do_dodge = bool(opts.get("dodge", false))
 	do_gcharge = bool(opts.get("gcharge", false))
+	do_squads = bool(opts.get("squads", true))
 	_rng.seed = int(opts.get("seed", 1))
 
 
@@ -118,6 +127,8 @@ func think(sim, dt: float) -> void:
 	_wait = float(tuning.think_interval)
 	if do_gcharge:
 		_think_gcharge(sim, s)
+	if do_squads and s.squads:
+		_think_guard(sim, s)
 	if do_cast:
 		_think_cast(sim, s)
 
@@ -443,6 +454,32 @@ func _think_gcharge(sim, s) -> void:
 			sim.set_general_charge(side_id, true)
 	elif own < theirs * float(tuning.return_adv):
 		sim.set_general_charge(side_id, false)
+
+
+# --- guard group ---------------------------------------------------------------
+
+func _think_guard(sim, s) -> void:
+	var own := 0.0
+	var theirs := 0.0
+	var main_n := 0
+	var e = null
+	for u in sim.units:
+		if u.alive and not u.is_general:
+			if u.side == s:
+				own += u.hp
+				if u.group == 0:
+					main_n += 1
+			else:
+				theirs += u.hp
+				e = u.side
+	if e == null:
+		return
+	if not s.guard_out:
+		var stall: bool = main_n == 0 and (e.hold_range > 0.0 or e.retreating)
+		if own >= theirs * float(tuning.guard_release_adv) or stall:
+			sim.set_guard_out(side_id, true)
+	elif own < theirs * float(tuning.guard_recall_adv) and main_n > 0:
+		sim.set_guard_out(side_id, false)
 
 
 # --- duel offer --------------------------------------------------------------------
