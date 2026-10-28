@@ -175,6 +175,12 @@ func _draw_order_box(font: Font) -> void:
 		label += " · แม่ทัพบุก"
 	if s.squads and s.guard_out:
 		label += " · คุ้มกันบุก"
+	if s.dispersed:
+		label += " · แตกปีก"
+	if s.raiding:
+		label += " · จู่โจมอ้อม"
+	if s.form_command == "divrush":
+		label += " · กอง %d/%d" % [s.divs_sent, s.divs]
 	_text(font, label, Vector2(ORDER_BOX.position.x, ORDER_BOX.position.y + 12), 9, TRIM_HI, true, ORDER_BOX.size.x - 14, true)
 	# key hint tucked in the right edge of the box
 	_text(font, "Tab", Vector2(ORDER_BOX.position.x, ORDER_BOX.position.y + 11), 6, DIM, false, ORDER_BOX.size.x - 3)

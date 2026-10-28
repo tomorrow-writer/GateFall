@@ -31,6 +31,9 @@ extends Node2D
 
 const BattleSim = preload("res://scripts/battle/BattleSim.gd")
 const BattleRng = preload("res://scripts/battle/BattleRng.gd")
+const FormationPicker = preload("res://scripts/battle/FormationPicker.gd")
+## Army colour on the setup screen's formation diagrams, by side name.
+const ARMY_COLOURS := {"slime": Color("8fe07a"), "human": Color("7fb2ff")}
 
 ## Which side the player commands. The other side is AI.
 @export var player_side := "S"
@@ -82,6 +85,8 @@ var _order_buttons := {}
 var _lane_buttons: Array[Button] = []
 var _special_buttons: Array[Button] = []
 var _guard_btn: Button = null  # squad formations: release / recall the guard group [R]
+var _form_btn: Button = null  # the formation's own command [E] (disperse / raid / divrush)
+var _picker: Control = null  # setup screen: formation cards (FormationPicker.gd)
 ## Command menu open: the sim does not step (DF's pausing command window).
 var menu_open := false
 ## Dev mode: troop picks per side (index into cfg.dev.troop_options, -1 = config default).
@@ -140,6 +145,12 @@ func _ready() -> void:
 	_guard_btn.tooltip_text = "[R] ส่งกองคุ้มกันออกบุก / เรียกกลับมาคุ้มกันแม่ทัพ"
 	_guard_btn.pressed.connect(_toggle_guard)
 	general_btn.get_parent().add_child(_guard_btn)
+	_form_btn = Button.new()
+	_form_btn.toggle_mode = true
+	_form_btn.focus_mode = Control.FOCUS_NONE
+	_form_btn.add_theme_font_size_override("font_size", 8)
+	_form_btn.pressed.connect(_formation_command)
+	general_btn.get_parent().add_child(_form_btn)
 	for i in special_row.get_child_count():
 		var b: Button = special_row.get_child(i)
 		b.pressed.connect(_cast_special.bind(i))
@@ -160,6 +171,24 @@ func _ready() -> void:
 		b.pressed.connect(_pick_formation.bind(key))
 		formation_list.add_child(b)
 		_formation_buttons[key] = b
+
+	# Setup screen: the formation picker replaces the old row of buttons; the
+	# old panel stays (bottom left) for the DEV row only.
+	_picker = FormationPicker.new()
+	var colour := Color("8fe07a")
+	for sd in cfg.sides:
+		if sd.id == player_side:
+			colour = ARMY_COLOURS.get(str(sd.get("name", "")), colour)
+	_picker.setup(cfg, colour)
+	_picker.picked.connect(_pick_formation)
+	_picker.start_pressed.connect(_start_fight)
+	hud.get_parent().add_child(_picker)
+	formation_list.get_parent().hide()
+	formation_info.hide()
+	setup_panel.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	setup_panel.position = Vector2(232, 161)
+	setup_panel.add_theme_stylebox_override("panel", StyleBoxEmpty.new())
+	setup_panel.size = Vector2.ZERO
 
 	_build_dev_row()
 	view.player_side = player_side
@@ -236,6 +265,11 @@ func _unhandled_input(event: InputEvent) -> void:
 	if phase == "setup" and dev_mode and event.keycode == KEY_8:
 		_cycle_troops(_enemy_side)
 		return
+	if phase == "setup" and not menu_open and _picker != null:
+		var step := {KEY_LEFT: -1, KEY_RIGHT: 1, KEY_UP: -FormationPicker.COLS, KEY_DOWN: FormationPicker.COLS}
+		if step.has(event.keycode):
+			_picker.move(step[event.keycode])
+			return
 	if event.keycode == KEY_TAB:
 		_toggle_menu()
 		return
@@ -259,6 +293,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			_toggle_general()
 		KEY_R:
 			_toggle_guard()
+		KEY_E:
+			_formation_command()
 		KEY_4:
 			_cast_special(0)
 		KEY_5:
@@ -292,6 +328,8 @@ func _pick_formation(key: String) -> void:
 	_formation_buttons[key].button_pressed = true
 	_new_sim()
 	formation_info.text = _formation_text(cfg.formations[key]) + "\n" + _specials_text()
+	_picker.selected = key
+	_picker.specials_lines = _specials_text().split("\n")
 
 
 ## Builds the battle now so the setup screen shows the real starting positions.
@@ -481,6 +519,27 @@ func _toggle_guard() -> void:
 	_close_menu()
 
 
+## The formation's own command (disperse / raid / send the next division).
+func _formation_command() -> void:
+	if phase != "fight" or sim == null:
+		return
+	sim.formation_command(player_side)
+	_close_menu()
+
+
+## Button text for the formation command in its current state, "" = none.
+static func form_command_label(s, sim_ref) -> String:
+	match s.form_command:
+		"disperse":
+			return "รวมปีก [E]" if s.dispersed else "แตกปีก [E]"
+		"raid":
+			return "เรียกกองจู่โจมกลับ [E]" if s.raiding else "จู่โจมอ้อม ×%d [E]" % sim_ref.group_count(s.id, 2)
+		"divrush":
+			var left: int = s.divs - s.divs_sent
+			return "ส่งกองถัดไป (เหลือ %d) [E]" % left if left > 0 else "ส่งครบแล้ว"
+	return ""
+
+
 ## slot 0 small, 1 medium, 2 large; -1 = the largest one ready.
 func _cast_special(slot: int) -> void:
 	if phase != "fight" or sim == null:
@@ -514,6 +573,7 @@ func _update_hud() -> void:
 	command_menu.visible = menu_open
 	if phase == "setup":
 		setup_panel.visible = not menu_open
+	_picker.visible = phase == "setup" and not menu_open
 	special_row.visible = not s.specials.is_empty()
 	for i in _special_buttons.size():
 		var b := _special_buttons[i]
@@ -542,6 +602,12 @@ func _update_hud() -> void:
 	general_btn.set_pressed_no_signal(s.gen_charge)
 	var gc: Dictionary = cfg.get("general_charge", {})
 	general_btn.text = ("กลับ" if s.gen_charge else str(gc.get("short_label", "ลงสนาม")))
+	var fl := form_command_label(s, sim)
+	_form_btn.visible = fl != ""
+	if fl != "":
+		_form_btn.text = fl
+		_form_btn.set_pressed_no_signal(s.dispersed or s.raiding)
+		_form_btn.disabled = not field or (s.form_command == "divrush" and s.divs_sent >= s.divs)
 	_guard_btn.visible = s.squads
 	if s.squads:
 		var gn := sim.group_counts(player_side).y
@@ -578,7 +644,7 @@ func _specials_text() -> String:
 	if s == null or s.specials.is_empty():
 		return ""
 	var g := sim.general_of(player_side)
-	var t := "ท่าพิเศษแม่ทัพ"
+	var t := "แม่ทัพ"
 	if g != null:
 		var label := str(cfg.units.get(g.type_id, {}).get("focus_label", ""))
 		if label != "":

@@ -205,14 +205,22 @@ func _draw_guard(s) -> void:
 		draw_set_transform(Vector2.ZERO)
 
 
-## Squad formations: a faint gold mark at the feet of the guard group while it
-## is on duty round the general, so the player can tell the two groups apart.
+## Squad formations: a faint mark at the feet of troops at their post, so the
+## player can tell the groups apart: gold = guards round the general, orange =
+## the raid group (waiting, or on the raid), pale = divisions not sent yet.
 func _draw_squad_marks(s) -> void:
 	for u in sim.units:
-		if not u.alive or u.side != s or u.is_general or u.group != 1:
+		if not u.alive or u.side != s or u.is_general or u.group == BattleSim.GROUP_MAIN:
 			continue
+		var col := Color(1.0, 0.82, 0.35, 0.35)
+		if u.group == BattleSim.GROUP_RAID:
+			col = Color(1.0, 0.6, 0.24, 0.5 if s.raiding else 0.3)
+		elif not sim._guarding(u):
+			continue  # released guards, divisions sent in: no mark
+		elif u.group >= BattleSim.GROUP_DIV:
+			col = Color(0.85, 0.9, 1.0, 0.3)
 		draw_set_transform(Vector2(u.x, u.y), 0.0, Vector2(1.0, 0.4))
-		draw_arc(Vector2.ZERO, u.radius + 1.0, 0, TAU, 12, Color(1.0, 0.82, 0.35, 0.35), 1.0)
+		draw_arc(Vector2.ZERO, u.radius + 1.0, 0, TAU, 12, col, 1.0)
 		draw_set_transform(Vector2.ZERO)
 
 
@@ -297,7 +305,7 @@ func _draw() -> void:
 			_draw_warning(s)
 		if not s.guard.is_empty():
 			_draw_guard(s)
-		if s.squads and not s.guard_out:
+		if s.squads or s.form_command != "":
 			_draw_squad_marks(s)
 	# Wave behind the units (a cavalry charge rides over them, drawn below)
 	for s in sim.sides:
