@@ -3,11 +3,13 @@
 ## as the battle HUD) and drives WorldSim, which lives in the Campaign autoload
 ## so the war carries on after a battle.
 ##
-## Mouse:
-##   click a general's banner (or a castle with your generals) = select
-##   with a general selected, click any castle = march there (path is shown
-##     while hovering) · click its own castle again = next general there
-##   right-click = deselect
+## Mouse (like DF: pick one general, give one order):
+##   the roster along the bottom lists all your generals: click a name =
+##     select it (click again = deselect); a banner on the map works too
+##   with a general selected, click any castle = march there (path shown
+##     while hovering); the order deselects it, so the next click picks again
+##   click a castle with your generals and nobody selected = select the first
+##     there (click again = the next one) · right-click = deselect
 ## Keys:
 ##   Space = pause / go on · 1 / 2 / 3 = speed ×1 / ×2 / ×4
 ##   Tab = next of your generals · Esc = deselect
@@ -39,6 +41,7 @@ var data: Dictionary
 var side_cfg: Dictionary
 var selected := ""  # general id
 var hover_castle := ""
+var hover_chip := ""  # general id under the mouse in the roster
 var paused := false
 var speed_i := 0
 var log_lines: Array[String] = []
@@ -79,9 +82,6 @@ func _bind(w: WorldSim) -> void:
 	data = w.data
 	side_cfg = data.sides
 	_make_decor()
-	var mine := world.generals_of(Campaign.player_side)
-	if selected == "" and not mine.is_empty():
-		selected = mine[0].id
 
 
 func _process(delta: float) -> void:
@@ -92,7 +92,13 @@ func _process(delta: float) -> void:
 		for e in world.step(days):
 			_on_event(e)
 		_check_battles()
-	hover_castle = _castle_at(get_local_mouse_position())
+	var mp := get_local_mouse_position()
+	hover_chip = ""
+	if world != null:
+		for c in _roster():
+			if c.rect.has_point(mp):
+				hover_chip = c.id
+	hover_castle = "" if mp.y >= BOTTOM_BAR.position.y or mp.y < TOP_BAR.end.y else _castle_at(mp)
 	queue_redraw()
 
 
@@ -138,27 +144,31 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _click(p: Vector2) -> void:
-	# Banners first: picking a general directly.
-	for t in _tokens():
-		if t.rect.grow(1.0).has_point(p):
-			var tg := world.get_general(t.id)
-			if tg.side == Campaign.player_side:
-				selected = tg.id
-				return
-	var cid := _castle_at(p)
-	if cid == "":
+	# Roster along the bottom.
+	for c in _roster():
+		if c.rect.has_point(p):
+			selected = "" if selected == c.id else c.id
+			return
+	if p.y >= BOTTOM_BAR.position.y or p.y < TOP_BAR.end.y:
 		return
 	var g := world.get_general(selected)
-	if g != null and g.state in ["idle", "moving"]:
-		if g.state == "idle" and g.castle == cid:
-			_select_next(cid)
-			return
+	var cid := _castle_at(p)
+	# Banners on the map (only when no castle order is meant).
+	if g == null or cid == "":
+		for t in _tokens():
+			if t.rect.grow(2.0).has_point(p):
+				var tg := world.get_general(t.id)
+				if tg.side == Campaign.player_side:
+					selected = tg.id
+					return
+	if cid == "":
+		return
+	if g != null and g.state in ["idle", "moving"] and not (g.state == "idle" and g.castle == cid):
 		if world.order_move(g, cid):
 			_log("%s เดินทัพไป %s" % [g.name, world.castles[cid].name])
+			selected = ""  # one order per pick, like DF
 		return
-	var here := world.generals_at(cid, Campaign.player_side)
-	if not here.is_empty():
-		selected = here[0].id
+	_select_next(cid)
 
 
 ## Next of the player's generals (only those standing in `in_castle` if given).
@@ -551,6 +561,8 @@ func _draw_generals(font: Font) -> void:
 			draw_rect(r, col)
 			if g.king:
 				draw_rect(Rect2(r.position.x + 1, r.position.y + 1, 3, 1), TRIM_HI)
+		if g.id == hover_chip:
+			draw_arc(r.get_center(), 6.0, 0, TAU, 16, TRIM_HI, 1.0)
 		if sel and fmod(_clock, 0.8) < 0.55:
 			draw_rect(r.grow(1.5), Color.WHITE, false, 1.0)
 		if g.troops < 0.5:
@@ -576,42 +588,88 @@ func _draw_top(font: Font) -> void:
 			_text(font, t, Vector2(SCREEN.x - 3 - _w(font, t, 6), 9), 6, _side_col(side), false)
 
 
+## Chips of the player's generals along the bottom bar, left to right.
+func _roster() -> Array:
+	var out := []
+	if world == null:
+		return out
+	var font := ThemeDB.fallback_font
+	var x := 3.0
+	for g in world.generals_of(Campaign.player_side):
+		var w := _w(font, _chip_text(g), 6) + 9.0
+		out.append({"id": g.id, "rect": Rect2(x, BOTTOM_BAR.position.y + 3, w, 10)})
+		x += w + 3.0
+	return out
+
+
+func _chip_text(g) -> String:
+	var mark := ""
+	match g.state:
+		"moving":
+			mark = " ถอย" if g.retreating else " เดิน"
+		"battle":
+			mark = " รบ"
+	return "%s%s %d%s" % ["★" if g.king else "", g.name, int(g.troops), mark]
+
+
 func _draw_bottom(font: Font) -> void:
 	draw_rect(BOTTOM_BAR, PANEL)
 	draw_line(Vector2(0, BOTTOM_BAR.position.y), Vector2(SCREEN.x, BOTTOM_BAR.position.y), TRIM, 1.0)
+	for c in _roster():
+		var g := world.get_general(c.id)
+		var r: Rect2 = c.rect
+		var sel: bool = c.id == selected
+		draw_rect(r, Color(0.16, 0.18, 0.28) if sel or c.id == hover_chip else Color(0.09, 0.1, 0.16))
+		draw_rect(r.grow(-0.5), TRIM_HI if sel else (TRIM if c.id == hover_chip else Color(0.3, 0.3, 0.35)), false, 1.0)
+		draw_rect(Rect2(r.position.x + 2, r.position.y + 3, 4, 4), _side_col(g.side))
+		var col := TEXT if g.state == "idle" else DIM
+		if g.troops < 0.5:
+			col = ALERT
+		_text(font, _chip_text(g), Vector2(r.position.x + 7.5, r.position.y + 7.5), 6, col, false)
 	var g := world.get_general(selected)
-	var y := BOTTOM_BAR.position.y + 8
+	var y := BOTTOM_BAR.position.y + 22
 	if g != null:
-		var where := ""
-		match g.state:
-			"idle":
-				where = "อยู่ที่ " + world.castles[g.castle].name
-			"moving":
-				where = ("ถอยไป " if g.retreating else "กำลังไป ") + world.castles[g.target()].name
-			"battle":
-				where = "กำลังรบ"
-		var t := "%s%s · ทหาร %d/%d · %s" % ["★" if g.king else "", g.name, int(g.troops), int(world.rules.max_troops), where]
-		_text(font, t, Vector2(3, y), 8, _side_col(g.side), false)
-		if hover_castle != "":
-			_text(font, "→ คลิกเพื่อเดินทัพไป %s" % world.castles[hover_castle].name, Vector2(3, y + 9), 6, DIM, false)
+		var t := ""
+		if hover_castle != "" and not (g.state == "idle" and g.castle == hover_castle):
+			t = "คลิกเพื่อส่ง %s ไป %s" % [g.name, world.castles[hover_castle].name]
 		else:
-			_text(font, "คลิกปราสาทปลายทาง · Tab แม่ทัพถัดไป · คลิกขวายกเลิก", Vector2(3, y + 9), 6, DIM, false)
-	else:
-		_text(font, "คลิกธงแม่ทัพของเรา หรือกด Tab", Vector2(3, y), 8, DIM, false)
-		_text(font, "Space หยุดเวลา · 1/2/3 ความเร็ว", Vector2(3, y + 9), 6, DIM, false)
-	# castle info on hover (right half)
-	if hover_castle != "":
-		var c: Dictionary = world.castles[hover_castle]
-		var lines := ["%s (%s)" % [c.name, side_cfg[c.owner].label]]
-		for e in world.generals_at(hover_castle):
-			lines.append("%s ทหาร %d" % [e.name, int(e.troops)])
-		for i in mini(lines.size(), 3):
-			_text(font, lines[i], Vector2(SCREEN.x - 3 - _w(font, lines[i], 6), BOTTOM_BAR.position.y + 7 + i * 7), 6,
-					_side_col(c.owner) if i == 0 else TEXT, false)
+			match g.state:
+				"idle":
+					t = "%s อยู่ที่ %s · คลิกปราสาทปลายทาง · คลิกขวายกเลิก" % [g.name, world.castles[g.castle].name]
+				"moving":
+					t = "%s %s %s · คลิกปราสาทอื่นเพื่อเปลี่ยนทาง" % [g.name, "ถอยไป" if g.retreating else "กำลังไป",
+							world.castles[g.target()].name]
+				"battle":
+					t = "%s กำลังรบ" % g.name
+		_text(font, t, Vector2(3, y), 6, TRIM_HI, false)
 	elif not log_lines.is_empty():
 		var l: String = log_lines[-1]
-		_text(font, l, Vector2(SCREEN.x - 3 - _w(font, l, 6), BOTTOM_BAR.position.y + 21), 6,
-				ALERT if l.begins_with("!") else TEXT, false)
+		_text(font, l, Vector2(3, y), 6, ALERT if l.begins_with("!") else TEXT, false)
+	else:
+		_text(font, "เลือกแม่ทัพจากแถบนี้ แล้วคลิกปราสาทที่จะไป · Space หยุดเวลา", Vector2(3, y), 6, DIM, false)
+	if hover_castle != "":
+		_draw_castle_tip(font, hover_castle)
+
+
+## Small box next to a hovered castle: owner and who stands there.
+func _draw_castle_tip(font: Font, cid: String) -> void:
+	var c: Dictionary = world.castles[cid]
+	var lines := ["%s (%s)" % [c.name, side_cfg[c.owner].label]]
+	for e in world.generals_at(cid):
+		lines.append("%s ทหาร %d" % [e.name, int(e.troops)])
+	var w := 0.0
+	for l in lines:
+		w = maxf(w, _w(font, l, 6))
+	var size := Vector2(w + 6, lines.size() * 7 + 3)
+	var pos: Vector2 = c.pos + Vector2(10, -size.y / 2.0)
+	if pos.x + size.x > SCREEN.x - 2:
+		pos.x = c.pos.x - 10 - size.x
+	pos.y = clampf(pos.y, TOP_BAR.end.y + 2, BOTTOM_BAR.position.y - size.y - 2)
+	var r := Rect2(pos.round(), size)
+	draw_rect(r, PANEL)
+	draw_rect(r.grow(-0.5), TRIM, false, 1.0)
+	for i in lines.size():
+		_text(font, lines[i], r.position + Vector2(3, 7.5 + i * 7), 6, _side_col(c.owner) if i == 0 else TEXT, false)
 
 
 func _w(font: Font, t: String, size: int) -> float:
