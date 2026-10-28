@@ -1275,7 +1275,10 @@ func _raid_run(u: Unit, eg: Unit, dt: float, move_y: float) -> bool:
 		edge = float(_field.y_min) + 4.0 if u.side.raid_edge < 0 else float(_field.y_max) - 4.0
 	var tx := eg.x - f * RAID_TURN * 0.5
 	var dx := tx - u.x
-	var dy := (edge - u.y) * 2.0  # get to the edge first
+	var dy := edge - u.y
+	# out to the track first (mostly sideways, a little forward), then along it
+	if absf(dy) > 3.0:
+		dx = signf(dx) * absf(dy) * 0.35
 	var sp := u.spd * u.side.form_spd * u.side.raid_spd
 	var my := dy * move_y
 	var dm := BattleMath.hypot(dx, my)
@@ -1649,6 +1652,9 @@ func _separate(live: Array[Unit]) -> void:
 		for j in range(i + 1, n):
 			var b := live[j]
 			if not b.alive:
+				continue
+			# raiders on their run slip past enemies (no shoving either way)
+			if a.side != b.side and (a.running or b.running):
 				continue
 			var mn := a.radius + b.radius
 			# A soldier fighting an enemy general may stand within its reach
