@@ -171,6 +171,7 @@ class Unit:
 	var anim: float = 0.0  # animation clock (view only)
 	var alive: bool = true
 	var walking: bool = false
+	var running: bool = false  # raider on its run round the edge: enemies don't chase it
 	var swing: float = 0.0  # attack swing timer (view only)
 	var born: float = 0.0  # spawn-in timer for split pieces (view only)
 	var bx: float = 0.0  # where a split piece came from (view only)
@@ -448,6 +449,8 @@ func step(dt: float) -> Array:
 			continue
 		var gmode := _guarding(u)
 		var rmode := _raiding(u)
+		if not rmode:
+			u.running = false
 		var dmode := us.dispersed and not u.is_general and not gmode and not rmode and _lanes >= 3 \
 				and us.split_lane < 0
 		# Disperse: troops keep out of the middle lane, each to its own side.
@@ -476,12 +479,13 @@ func step(dt: float) -> Array:
 				continue
 		elif rmode:
 			pass
-		elif u.tg == null or not u.tg.alive or u.re <= 0.0:
+		elif u.tg == null or not u.tg.alive or u.re <= 0.0 \
+				or (u.tg.running and not _catches(u, u.tg)):
 			var best: Unit = null
 			var bd := 1e9
 			var uy_w := y_w * float(u.ranged.get("aim_y", 1)) if not u.ranged.is_empty() else y_w
 			for v in live:
-				if v.side != us and v.alive:
+				if v.side != us and v.alive and (not v.running or _catches(u, v)):
 					var ex := v.x - u.x
 					var ey := (v.y - u.y) * uy_w
 					var dd := ex * ex + ey * ey
@@ -1198,8 +1202,6 @@ func _guarding(u: Unit) -> bool:
 		return false
 	if u.group == GROUP_GUARD:
 		return not u.side.guard_out
-	if u.group == GROUP_RAID:
-		return not u.side.raiding  # the raid group waits at its spot until sent
 	return u.group >= GROUP_DIV and u.group - GROUP_DIV >= u.side.divs_sent
 
 
@@ -1222,6 +1224,11 @@ func _raiding(u: Unit) -> bool:
 
 
 const RAID_TURN := 36.0  # px short of the enemy general where raiders turn in
+const RAID_CATCH := 0.0  # a running raider can be hit in passing this close (0 = never), not chased
+
+
+func _catches(u: Unit, raider: Unit) -> bool:
+	return absf(raider.x - u.x) < RAID_CATCH and absf(raider.y - u.y) < RAID_CATCH
 
 
 ## Raider: run toward a point on the field edge (its own side of the field:
@@ -1230,7 +1237,8 @@ const RAID_TURN := 36.0  # px short of the enemy general where raiders turn in
 func _raid_run(u: Unit, eg: Unit, dt: float, move_y: float) -> bool:
 	var f := float(u.side.facing)
 	var ahead := (eg.x - u.x) * f
-	if ahead <= RAID_TURN:
+	u.running = ahead > RAID_TURN
+	if not u.running:
 		return false
 	var edge := float(_field.y_min) + 4.0 if u.flank_sign < 0 else float(_field.y_max) - 4.0
 	var tx := eg.x - f * RAID_TURN * 0.5
@@ -1271,7 +1279,7 @@ func _guard_pick(u: Unit, live: Array[Unit]) -> bool:
 	var best: Unit = null
 	var bd := 1e9
 	for v in live:
-		if not v.alive or v.side == u.side:
+		if not v.alive or v.side == u.side or (v.running and not _catches(u, v)):
 			continue
 		if BattleMath.hypot(v.x - c.x, v.y - c.y) > r:
 			continue
