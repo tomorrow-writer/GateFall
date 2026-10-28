@@ -22,6 +22,8 @@ const ORDER_BOX := Rect2(124, 165, 72, 13)
 var sim = null
 var view = null  # BattleView: sprite strips for the portraits
 var player_side := ""
+## General names per side id (world-map battles); empty = "แม่ทัพ<side>".
+var names := {}
 var menu_open := false
 var _clock := 0.0
 
@@ -73,7 +75,7 @@ func _draw_general_panel(font: Font, i: int) -> void:
 		_draw_portrait(g, pr, left)
 	draw_rect(pr.grow(-0.5), TRIM, false, 1.0)
 	var mine: bool = s.id == player_side
-	var name := "แม่ทัพ" + _side_label(s.id)
+	var name: String = names.get(s.id, "แม่ทัพ" + _side_label(s.id))
 	var tx0 := pr.end.x + 4 if left else r.position.x + 4
 	var tx1 := r.end.x - 4 if left else pr.position.x - 4
 	var bw := tx1 - tx0

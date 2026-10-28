@@ -89,6 +89,10 @@ var _form_btn: Button = null  # the formation's own command [E] (disperse / raid
 var _picker: Control = null  # setup screen: formation cards (FormationPicker.gd)
 ## Command menu open: the sim does not step (DF's pausing command window).
 var menu_open := false
+## Campaign autoload while fighting a world-map battle (troop counts and the
+## player's side come from the map, the result goes back to it); null when the
+## battle scene runs on its own.
+var _campaign: Node = null
 ## Dev mode: troop picks per side (index into cfg.dev.troop_options, -1 = config default).
 @export var dev_mode := false
 var _dev_troops := {}
@@ -100,6 +104,11 @@ func _ready() -> void:
 	cfg = BattleSim.load_config(config_path)
 	if cfg.is_empty():
 		return
+	_campaign = get_node_or_null("/root/Campaign")
+	if _campaign != null and _campaign.in_battle():
+		player_side = str(_campaign.battle.player_side)
+	else:
+		_campaign = null
 	_dt = 1.0 / float(cfg.sim.steps_per_second)
 	for sd in cfg.sides:
 		if sd.id == player_side:
@@ -194,6 +203,8 @@ func _ready() -> void:
 	view.player_side = player_side
 	hud.view = view
 	hud.player_side = player_side
+	if _campaign != null:
+		hud.names = _campaign.battle.get("names", {})
 	_back_to_setup()
 
 
@@ -313,6 +324,12 @@ func _unhandled_input(event: InputEvent) -> void:
 # --- phases ------------------------------------------------------------------
 
 func _back_to_setup() -> void:
+	if _campaign != null and phase == "over":
+		var left := {}
+		for sd in cfg.sides:
+			left[sd.id] = sim.troop_count(sd.id)
+		_campaign.finish_battle(sim.over, left)
+		return
 	phase = "setup"
 	result_panel.hide()
 	duel_panel.hide()
@@ -345,6 +362,10 @@ func _new_sim() -> void:
 			var opt := _troop_option(int(_dev_troops[id]))
 			if not opt.is_empty():
 				overrides[id]["units"] = opt.units
+	if _campaign != null:
+		var troops: Dictionary = _campaign.battle.troops
+		for sd in cfg.sides:
+			overrides[sd.id]["units"] = [[sd.unit, int(troops.get(sd.id, sd.count))]]
 	sim = BattleSim.new(cfg, overrides, BattleRng.new(_seed))
 	view.bind(sim)
 	hud.sim = sim
@@ -444,6 +465,8 @@ func _show_result(winner: String) -> void:
 		result_label.text = "แพ้"
 		result_detail.text = _defeat_text(player_side) + "\nศัตรูเหลือ %d · %.0f วินาที" % [theirs, sim.time]
 	result_detail.text += "\nseed %d" % _seed
+	if _campaign != null:
+		again_btn.text = "กลับแผนที่"
 	result_panel.show()
 
 
