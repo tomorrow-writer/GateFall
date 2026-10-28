@@ -1,0 +1,54 @@
+{
+  "_about": "World map (real-time like DF). Coordinates are game pixels on the 320x180 screen. Values are a starting point only: balance comes later.",
+  "time": {
+    "_note": "day_seconds = real seconds per in-game day at speed x1 · speeds = keys 1/2/3",
+    "day_seconds": 2.0,
+    "speeds": [1, 2, 4]
+  },
+  "rules": {
+    "_note": "move_speed px/day along roads · regen = troops/day for a general resting in its own castle · ai_think_days = how often the AI looks for a target",
+    "move_speed": 14.0,
+    "max_troops": 30,
+    "regen_per_day": 2.0,
+    "meet_distance": 5.0,
+    "ai_think_days": 1.0,
+    "ai_min_troops": 20,
+    "ai_odds": 1.1
+  },
+  "sides": {
+    "S": {"label": "สไลม์", "color": "8fe07a", "dark": "2f6b34"},
+    "K": {"label": "มนุษย์", "color": "7fb2ff", "dark": "2c4a86"},
+    "": {"label": "ไร้เจ้าของ", "color": "c9c2b0", "dark": "6f6a5c"}
+  },
+  "land": [[14, 22], [60, 16], [130, 18], [190, 14], [262, 18], [306, 26], [312, 70], [306, 110], [312, 146], [288, 152], [210, 148], [150, 152], [90, 148], [24, 150], [8, 118], [14, 76]],
+  "castles": [
+    {"id": "s_cap", "name": "ประตูมรกต", "pos": [34, 86], "owner": "S", "capital": true},
+    {"id": "s1", "name": "ป้อมเมือกเหนือ", "pos": [62, 42], "owner": "S"},
+    {"id": "s2", "name": "ป้อมเมือกใต้", "pos": [64, 126], "owner": "S"},
+    {"id": "n1", "name": "หมู่บ้านต้นสน", "pos": [112, 38], "owner": ""},
+    {"id": "n2", "name": "ทุ่งกลาง", "pos": [160, 86], "owner": ""},
+    {"id": "n3", "name": "ด่านหินแดง", "pos": [110, 132], "owner": ""},
+    {"id": "n4", "name": "เมืองท่าเหนือ", "pos": [208, 40], "owner": ""},
+    {"id": "n5", "name": "หมู่บ้านธารใส", "pos": [210, 130], "owner": ""},
+    {"id": "h1", "name": "ปราสาทเหนือ", "pos": [256, 44], "owner": "K"},
+    {"id": "h2", "name": "ป้อมใต้", "pos": [258, 128], "owner": "K"},
+    {"id": "h_cap", "name": "ปราสาทหลวง", "pos": [288, 88], "owner": "K", "capital": true}
+  ],
+  "roads": [
+    ["s_cap", "s1"], ["s_cap", "s2"],
+    ["s1", "n1"], ["s2", "n3"],
+    ["n1", "n2"], ["n3", "n2"],
+    ["n1", "n4"], ["n3", "n5"],
+    ["n2", "n4"], ["n2", "n5"],
+    ["n4", "h1"], ["n5", "h2"],
+    ["h1", "h_cap"], ["h2", "h_cap"]
+  ],
+  "generals": [
+    {"id": "s_king", "name": "ราชาโอซ", "side": "S", "castle": "s_cap", "king": true},
+    {"id": "s_g1", "name": "บลูบ", "side": "S", "castle": "s1"},
+    {"id": "s_g2", "name": "มิวค์", "side": "S", "castle": "s2"},
+    {"id": "k_king", "name": "กษัตริย์อัลวาร์", "side": "K", "castle": "h_cap", "king": true},
+    {"id": "k_g1", "name": "เซอร์ดาริน", "side": "K", "castle": "h1"},
+    {"id": "k_g2", "name": "เดมไลรา", "side": "K", "castle": "h2"}
+  ]
+}
