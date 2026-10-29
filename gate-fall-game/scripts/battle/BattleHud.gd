@@ -24,6 +24,8 @@ var view = null  # BattleView: sprite strips for the portraits
 var player_side := ""
 ## General names per side id (world-map battles); empty = "แม่ทัพ<side>".
 var names := {}
+## Castle battle: one line under the clock about the walls ("" = road / field).
+var siege_text := ""
 var menu_open := false
 var _clock := 0.0
 
@@ -40,6 +42,8 @@ func _draw() -> void:
 	for i in sim.sides.size():
 		_draw_general_panel(font, i)
 	_draw_clock(font)
+	if siege_text != "":
+		_text(font, siege_text, Vector2(0, 37), 6, TRIM_HI, false, SCREEN.x, true)
 	if sim.time > 0.0:
 		for i in sim.sides.size():
 			_draw_mp(font, i)

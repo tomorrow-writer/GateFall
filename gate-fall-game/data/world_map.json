@@ -24,7 +24,7 @@
     "step": 5,
     "levy": 5
   },
-  "_council_actions": "Each general standing in its own castle gets ONE action per council: levy = +council.levy troops into the reserve, or persuade a prisoner (see prisoners). Handing out troops (step buttons) is free.",
+  "_council_actions": "Each general standing in its own castle gets ONE action per council: levy = +council.levy troops into the reserve, persuade a prisoner (see prisoners), raise the castle's wall one level (once per castle per council) or build a siege engine (see siege). Handing out troops (step buttons) is free.",
   "prisoners": {
     "_note": "capture_if_fell = chance a beaten general is taken when its general fell in battle (pulling out before the duel = never; no way home = always). Persuade chance = base + per_council x councils captive - (loyalty - 50) x loyalty_weight (+king_bonus if the king asks), clamped to min..max. Kings never join. default_loyalty for generals without \"loyalty\" (kings 100). joined_loyalty = loyalty after joining. Basic values, balance later.",
     "capture_if_fell": 0.6,
@@ -36,6 +36,17 @@
     "min": 0.05,
     "max": 0.9,
     "joined_loyalty": 50
+  },
+  "siege": {
+    "_note": "Walls and siege engines (council actions, one per general like levy). wall_max = highest wall level · wall_take_per_level = damage the troops defending their own castle take less per level (0.1 = -10%; not the general, not the duel; road battles have no walls) · wall_lost_on_capture = levels knocked off when a castle changes hands · engines = false turns engines off · engine_speed = march speed x while dragging one · engine_cancels = wall levels an engine cuts in a battle at a walled castle (then it is spent, won or lost; a castle with no wall leaves it for the next; it is lost too if its general is beaten on a road) · ai_engine_wall = the AI builds an engine when a next-door enemy castle has this wall or more · castle_background = battle ground for castle battles. A castle may set \"wall\" to start with (default 0). Basic values, balance later.",
+    "wall_max": 3,
+    "wall_take_per_level": 0.1,
+    "wall_lost_on_capture": 1,
+    "engines": true,
+    "engine_speed": 0.7,
+    "engine_cancels": 2,
+    "ai_engine_wall": 2,
+    "castle_background": "res://assets/backgrounds/field_castle.png"
   },
   "map_sprites": {
     "_note": "Marching armies are drawn with the battle sprite of their troops (battle_config.json sprites). Per side: sprite id, scale on the map, followers = extra troops walking behind (one per `per` troops, at most `max`). A general can set its own \"unit\" to override. The ring at the feet is the side colour (a captured general who joins keeps its own look but the colour tells the side).",
