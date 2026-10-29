@@ -27,12 +27,16 @@ func _init() -> void:
 	var wins := {"S": 0, "K": 0, "": 0}
 	var days := 0.0
 	var fights := 0
+	var taken := 0
+	var joined := 0
 	var t0 := Time.get_ticks_msec()
 	for r in runs:
-		var w := WorldSim.new(data, ["S", "K"])
 		var seed_value := 1000 + r * 31
+		var w := WorldSim.new(data, ["S", "K"], seed_value)
 		while w.winner == "" and w.day < max_days:
 			for e in w.step(STEP):
+				taken += 1 if e.type == "captured" else 0
+				joined += 1 if e.type == "recruited" else 0
 				if log_first and r == 0:
 					print(_line(w, e))
 			for b in w.battles.duplicate():
@@ -45,8 +49,10 @@ func _init() -> void:
 					print("  day %.1f battle %s(%d) vs %s(%d) at %s -> %s left %s" % [w.day, a.name, a.troops,
 							d.name, d.troops, w.castles[b.castle].name if b.castle != "" else "road",
 							res.winner, res.left])
-				w.resolve_battle(int(b.id), res.winner, res.left)
+				w.resolve_battle(int(b.id), res.winner, res.left, res.fell)
 				for e in w._take_events():
+					taken += 1 if e.type == "captured" else 0
+					joined += 1 if e.type == "recruited" else 0
 					if log_first and r == 0:
 						print(_line(w, e))
 		wins[w.winner] += 1
@@ -55,6 +61,7 @@ func _init() -> void:
 				w.day, w.castles_of("S").size(), w.castles_of("K").size(), w.councils_held])
 	print("S %d · K %d · none %d · avg %.0f days · %.1f battles/war · %.1fs" % [wins.S, wins.K, wins[""],
 			days / runs, float(fights) / runs, (Time.get_ticks_msec() - t0) / 1000.0])
+	print("prisoners taken %.1f/war · joined %.1f/war" % [float(taken) / runs, float(joined) / runs])
 	quit()
 
 
@@ -70,7 +77,14 @@ func _line(w: WorldSim, e: Dictionary) -> String:
 		"retreat":
 			return "day %.1f %s retreats to %s" % [w.day, who, w.castles[e.to].name]
 		"captured":
-			return "day %.1f %s captured" % [w.day, who]
+			return "day %.1f %s captured by %s" % [w.day, who, e.get("by", "?")]
+		"levy":
+			return "day %.1f   %s levies +%d" % [w.day, who, e.amount]
+		"refused":
+			return "day %.1f   %s refuses %s (prisoner %d councils)" % [w.day, who, w.get_general(e.by).name,
+					g.captive_councils]
+		"recruited":
+			return "day %.1f   %s JOINS %s (asked by %s)" % [w.day, who, e.side, w.get_general(e.by).name]
 		"council":
 			return "day %.1f COUNCIL #%d income %s reserve %s troops S%d K%d" % [w.day, e.number, e.income, w.reserve,
 					w.troops_of("S"), w.troops_of("K")]

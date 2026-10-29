@@ -21,7 +21,21 @@
     "income_per_castle": 5,
     "capital_bonus": 5,
     "start": 10,
-    "step": 5
+    "step": 5,
+    "levy": 5
+  },
+  "_council_actions": "Each general standing in its own castle gets ONE action per council: levy = +council.levy troops into the reserve, or persuade a prisoner (see prisoners). Handing out troops (step buttons) is free.",
+  "prisoners": {
+    "_note": "capture_if_fell = chance a beaten general is taken when its general fell in battle (pulling out before the duel = never; no way home = always). Persuade chance = base + per_council x councils captive - (loyalty - 50) x loyalty_weight (+king_bonus if the king asks), clamped to min..max. Kings never join. default_loyalty for generals without \"loyalty\" (kings 100). joined_loyalty = loyalty after joining. Basic values, balance later.",
+    "capture_if_fell": 0.6,
+    "default_loyalty": 60,
+    "base": 0.2,
+    "per_council": 0.15,
+    "loyalty_weight": 0.01,
+    "king_bonus": 0.15,
+    "min": 0.05,
+    "max": 0.9,
+    "joined_loyalty": 50
   },
   "map_sprites": {
     "_note": "Marching armies are drawn with the battle sprite of their troops (battle_config.json sprites). Per side: sprite id, scale on the map, followers = extra troops walking behind (one per `per` troops, at most `max`). A general can set its own \"unit\" to override. The ring at the feet is the side colour (a captured general who joins keeps its own look but the colour tells the side).",
@@ -59,10 +73,10 @@
   ],
   "generals": [
     {"id": "s_king", "name": "ราชาโอซ", "side": "S", "castle": "s_cap", "king": true},
-    {"id": "s_g1", "name": "บลูบ", "side": "S", "castle": "s1"},
-    {"id": "s_g2", "name": "มิวค์", "side": "S", "castle": "s2"},
+    {"id": "s_g1", "name": "บลูบ", "side": "S", "castle": "s1", "loyalty": 55},
+    {"id": "s_g2", "name": "มิวค์", "side": "S", "castle": "s2", "loyalty": 70},
     {"id": "k_king", "name": "กษัตริย์อัลวาร์", "side": "K", "castle": "h_cap", "king": true},
-    {"id": "k_g1", "name": "เซอร์ดาริน", "side": "K", "castle": "h1"},
-    {"id": "k_g2", "name": "เดมไลรา", "side": "K", "castle": "h2"}
+    {"id": "k_g1", "name": "เซอร์ดาริน", "side": "K", "castle": "h1", "loyalty": 70},
+    {"id": "k_g2", "name": "เดมไลรา", "side": "K", "castle": "h2", "loyalty": 50}
   ]
 }

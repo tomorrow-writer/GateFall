@@ -36,9 +36,10 @@ func fight(b: Dictionary) -> void:
 
 
 ## Called by Battle.gd when a map battle is over.
-func finish_battle(winner: String, left: Dictionary) -> void:
+## fell: side id -> true if that side's general fell (it may be taken prisoner).
+func finish_battle(winner: String, left: Dictionary, fell: Dictionary = {}) -> void:
 	if world != null and not battle.is_empty():
-		world.resolve_battle(int(battle.id), winner, left)
+		world.resolve_battle(int(battle.id), winner, left, fell)
 	battle = {}
 	get_tree().change_scene_to_file(MAP_SCENE)
 

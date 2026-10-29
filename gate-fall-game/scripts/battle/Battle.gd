@@ -32,6 +32,7 @@ extends Node2D
 const BattleSim = preload("res://scripts/battle/BattleSim.gd")
 const BattleRng = preload("res://scripts/battle/BattleRng.gd")
 const FormationPicker = preload("res://scripts/battle/FormationPicker.gd")
+const AutoBattle = preload("res://scripts/world/AutoBattle.gd")
 ## Army colour on the setup screen's formation diagrams, by side name.
 const ARMY_COLOURS := {"slime": Color("8fe07a"), "human": Color("7fb2ff")}
 
@@ -331,7 +332,7 @@ func _back_to_setup() -> void:
 		var left := {}
 		for sd in cfg.sides:
 			left[sd.id] = sim.troop_count(sd.id)
-		_campaign.finish_battle(sim.over, left)
+		_campaign.finish_battle(sim.over, left, AutoBattle.fell_of(cfg, sim))
 		return
 	phase = "setup"
 	result_panel.hide()

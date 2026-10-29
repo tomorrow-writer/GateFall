@@ -10,7 +10,8 @@ const MAX_STEPS := 20000
 
 
 ## troops: side id -> troop count for this battle ({"S": 30, "K": 12}).
-## Returns {winner: side id | "draw", left: {side id: troops left}, time}.
+## Returns {winner: side id | "draw", left: {side id: troops left},
+## fell: {side id: true if its general fell (not pulled out)}, time}.
 static func resolve(cfg: Dictionary, troops: Dictionary, seed_value: int) -> Dictionary:
 	var sim := BattleSim.new(cfg, overrides(cfg, troops, ""), BattleRng.new(seed_value))
 	sim.record_events = false
@@ -22,8 +23,21 @@ static func resolve(cfg: Dictionary, troops: Dictionary, seed_value: int) -> Dic
 	var left := {}
 	for sd in cfg.sides:
 		left[sd.id] = sim.troop_count(sd.id)
-	var out := {"winner": sim.over if sim.over != "" else "draw", "left": left, "time": sim.time}
+	var out := {"winner": sim.over if sim.over != "" else "draw", "left": left, "fell": fell_of(cfg, sim),
+			"time": sim.time}
 	sim.dispose()
+	return out
+
+
+## Which sides lost their general in battle (field or duel), as opposed to
+## pulling out before the duel. The map may take those generals prisoner.
+static func fell_of(cfg: Dictionary, sim) -> Dictionary:
+	var out := {}
+	if sim.over == "" or sim.over == "draw":
+		return out
+	for sd in cfg.sides:
+		if sd.id != sim.over:
+			out[sd.id] = sim.defeat_reason(sd.id) in ["duel", "general"]
 	return out
 
 

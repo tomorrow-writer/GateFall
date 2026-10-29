@@ -61,6 +61,7 @@ var _popup_battle := -1
 var _map_sprites := {}  # sprite id -> {anims: {name: {tex, frames, fps}}, w, h, foot, height}
 var _facing := {}  # general id -> -1 (left) / 1 (right): kept while it stands to fight
 var _in_council := false  # the council window is open (the popup is the council)
+var _council_target := ""  # prisoner id the "ชวน" buttons in the council aim at
 
 
 func _ready() -> void:
@@ -234,9 +235,19 @@ func _on_event(e: Dictionary) -> void:
 		"retreat":
 			_log("%s ถอยไป %s" % [who, world.castles[e.to].name], mine)
 		"captured":
-			_log("%s ถูกจับ!" % who, mine)
+			_log("%s ถูกจับเป็นเชลย!" % who if mine else "จับ %s เป็นเชลยได้" % who, mine)
 			if selected == g.id:
 				selected = ""
+		"recruited":
+			# g has already changed side: mine = it joined us.
+			var by := world.get_general(str(e.by))
+			if mine:
+				_log("%s ยอมเข้าร่วมฝ่ายเรา! (%s ชวน)" % [who, by.name if by != null else ""])
+			else:
+				_log("%s ของเราถูกชวนไปเข้าฝ่ายศัตรู" % who, true)
+		"refused":
+			if g != null and g.held_by == Campaign.player_side:
+				_log("%s ไม่ยอมเข้าร่วม" % who)
 		"arrive":
 			if mine:
 				_log("%s ถึง %s" % [who, world.castles[e.castle].name])
@@ -298,7 +309,7 @@ func _auto(id: int) -> void:
 	var res := AutoBattle.resolve(_battle_cfg, _battle_troops(b), randi_range(1, 2147483646))
 	var a := world.get_general(b.a)
 	var d := world.get_general(b.d)
-	world.resolve_battle(id, res.winner, res.left)
+	world.resolve_battle(id, res.winner, res.left, res.fell)
 	var won := a if res.winner == a.side else d
 	var txt := "เสมอ" if res.winner == "draw" else "%s ชนะ" % won.name
 	_log("ศึก %s vs %s: %s (เหลือ %d / %d)" % [a.name, d.name, txt, res.left.get(a.side, 0), res.left.get(d.side, 0)],
@@ -367,12 +378,25 @@ func _show_council() -> void:
 	_close_popup()
 	_in_council = true
 	var side := Campaign.player_side
+	var prisoners := world.prisoners_of(side)
+	# Keep the aimed-at prisoner while it is still ours to ask; else the first
+	# one who can still be asked this council.
+	var target := world.get_general(_council_target)
+	if target == null or target.state != "captured" or target.held_by != side:
+		_council_target = ""
+		for p in prisoners:
+			if not p.king and not world.tried.has(p.id):
+				_council_target = p.id
+				break
+		if _council_target == "" and not prisoners.is_empty():
+			_council_target = prisoners[0].id
+	target = world.get_general(_council_target)
 	var panel := PanelContainer.new()
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(0.05, 0.06, 0.11, 0.95)
 	sb.border_color = TRIM_HI
 	sb.set_border_width_all(1)
-	sb.set_content_margin_all(6)
+	sb.set_content_margin_all(5)
 	panel.add_theme_stylebox_override("panel", sb)
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 2)
@@ -383,11 +407,12 @@ func _show_council() -> void:
 	_council_label(box, "คลังทหาร %d   (เดือนนี้ได้ +%d จาก %d ปราสาท)" % [int(world.reserve[side]),
 			world.income_of(side), n_castles], 8, TEXT, true)
 	var grid := GridContainer.new()
-	grid.columns = 6
+	grid.columns = 7
 	grid.add_theme_constant_override("h_separation", 4)
 	grid.add_theme_constant_override("v_separation", 2)
 	box.add_child(grid)
 	var cap := int(world.rules.max_troops)
+	var step := int(world.council_cfg.get("step", 5))
 	for g in world.generals_of(side):
 		var ok := world.can_draft(g)
 		_council_label(grid, ("★" if g.king else "") + g.name, 7, TEXT if ok else DIM, false)
@@ -395,13 +420,32 @@ func _show_council() -> void:
 				("กำลังรบ" if g.state == "battle" else "นอกปราสาท"))
 		_council_label(grid, where, 7, DIM, false)
 		_council_label(grid, "%d/%d" % [int(g.troops), cap], 7, TEXT if ok else DIM, false)
-		var step := int(world.council_cfg.get("step", 5))
 		_council_button(grid, "−%d" % step, _council_draft.bind(g.id, -step), ok and g.troops >= 1)
 		_council_button(grid, "+%d" % step, _council_draft.bind(g.id, step),
 				ok and g.troops < cap and int(world.reserve[side]) > 0)
 		_council_button(grid, "เต็ม", _council_draft.bind(g.id, cap),
 				ok and g.troops < cap and int(world.reserve[side]) > 0)
-	_council_label(box, "แจกได้เฉพาะแม่ทัพที่อยู่ในปราสาทของเรา · ทหารที่ไม่แจกเก็บไว้ในคลัง", 7, DIM, true)
+		_council_action_cell(grid, g, target)
+	# Prisoners we hold: click one to aim the "ชวน" buttons at it.
+	if not prisoners.is_empty():
+		var prow := HBoxContainer.new()
+		prow.alignment = BoxContainer.ALIGNMENT_CENTER
+		prow.add_theme_constant_override("separation", 3)
+		box.add_child(prow)
+		_council_label(prow, "เชลย:", 7, TRIM_HI, false)
+		for p in prisoners:
+			var t := ("▶" if p.id == _council_target else "") + ("★" if p.king else "") + p.name
+			if p.king:
+				t += " (ไม่ยอม)"
+			elif world.tried.has(p.id):
+				t += " (ลองแล้ว)"
+			_council_button(prow, t, _council_pick.bind(p.id), not p.king)
+	var taken := PackedStringArray()
+	for p in world.prisoners_of(WorldSim.other_side(side)):
+		taken.append(p.name)
+	if not taken.is_empty():
+		_council_label(box, "แม่ทัพเราที่ถูกจับ: " + ", ".join(taken), 7, ALERT, true)
+	_council_label(box, "แม่ทัพในปราสาทเรา: แจกทหารได้ · สั่งงานได้คนละ 1 อย่าง", 7, DIM, true)
 	var row := HBoxContainer.new()
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
 	row.add_theme_constant_override("separation", 4)
@@ -412,6 +456,27 @@ func _show_council() -> void:
 	panel.reset_size()
 	panel.position = ((SCREEN - panel.size) / 2.0).round()
 	_popup = panel
+
+
+## Last column of a general's row: its one action this council (levy, or
+## persuade the aimed-at prisoner), or what it already did.
+func _council_action_cell(grid: GridContainer, g, target) -> void:
+	var cell := HBoxContainer.new()
+	cell.add_theme_constant_override("separation", 2)
+	grid.add_child(cell)
+	if not world.can_draft(g):
+		_council_label(cell, "–", 7, DIM, false)
+		return
+	if world.acted.has(g.id):
+		var what := str(world.acted[g.id])
+		var done: String = {"levy": "เกณฑ์แล้ว", "persuade_ok": "ชวนสำเร็จ", "persuade_fail": "ชวนไม่สำเร็จ",
+				"joined": "เพิ่งเข้าร่วม"}.get(what, "สั่งแล้ว")
+		_council_label(cell, done, 7, TRIM_HI if what == "persuade_ok" else DIM, false)
+		return
+	_council_button(cell, "เกณฑ์ +%d" % world.levy_amount(), _council_levy.bind(g.id), world.levy_amount() > 0)
+	if target != null:
+		var c: float = world.recruit_chance(target, g)
+		_council_button(cell, "ชวน %d%%" % int(roundf(c * 100.0)), _council_persuade.bind(g.id, target.id), c > 0.0)
 
 
 func _council_label(parent: Control, t: String, size: int, col: Color, centre: bool) -> void:
@@ -451,9 +516,33 @@ func _council_draft(gid: String, n: int) -> void:
 	_show_council()
 
 
-## Same as the AI: fill up the weakest generals at home first.
+## Action: the general raises troops into the reserve.
+func _council_levy(gid: String) -> void:
+	var g := world.get_general(gid)
+	var n := world.levy(g)
+	if n > 0:
+		_log("%s เกณฑ์ทหาร +%d เข้าคลัง" % [g.name, n])
+	world._take_events()
+	_show_council()
+
+
+func _council_pick(pid: String) -> void:
+	_council_target = pid
+	_show_council()
+
+
+## Action: the general tries to talk the aimed-at prisoner into joining.
+func _council_persuade(gid: String, pid: String) -> void:
+	world.persuade(world.get_general(gid), world.get_general(pid))
+	for e in world._take_events():
+		_on_event(e)
+	_show_council()
+
+
+## Same as the AI: fill up the weakest generals at home first (troops only;
+## the one-per-general actions stay the player's choice).
 func _council_auto() -> void:
-	world.auto_council(Campaign.player_side)
+	world.auto_draft(Campaign.player_side)
 	_show_council()
 
 
@@ -753,10 +842,11 @@ func _load_map_sprites() -> void:
 
 
 ## Sprite set + scale a general's army is drawn with ({} = no sprite: diamond).
-## The side picks the troop look; a general may set its own "unit".
+## The side it started on picks the troop look (a general who changed sides
+## keeps its look; the foot ring shows the side); a general may set its own "unit".
 func _army_look(g) -> Dictionary:
 	var ms: Dictionary = data.get("map_sprites", {})
-	var side_look: Dictionary = ms.get(g.side, {})
+	var side_look: Dictionary = ms.get(g.origin if g.origin != "" else g.side, {})
 	var id := str(side_look.get("sprite", ""))
 	for gd in data.generals:
 		if gd.id == g.id and gd.has("unit"):
