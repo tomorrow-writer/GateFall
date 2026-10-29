@@ -60,6 +60,7 @@ var _popup: PanelContainer = null
 var _popup_battle := -1
 var _map_sprites := {}  # sprite id -> {anims: {name: {tex, frames, fps}}, w, h, foot, height}
 var _facing := {}  # general id -> -1 (left) / 1 (right): kept while it stands to fight
+var _in_council := false  # the council window is open (the popup is the council)
 
 
 func _ready() -> void:
@@ -141,6 +142,12 @@ func _unhandled_input(event: InputEvent) -> void:
 					_fight(_popup_battle)
 				KEY_A:
 					_auto(_popup_battle)
+		elif _in_council:
+			match k:
+				KEY_ENTER, KEY_KP_ENTER:
+					_end_council()
+				KEY_F:
+					_council_auto()
 		elif world.winner != "" and k in [KEY_ENTER, KEY_KP_ENTER]:
 			_restart()
 		return
@@ -233,11 +240,18 @@ func _on_event(e: Dictionary) -> void:
 		"arrive":
 			if mine:
 				_log("%s ถึง %s" % [who, world.castles[e.castle].name])
+		"council":
+			var inc: Dictionary = e.income
+			_log("ประชุมทัพครั้งที่ %d · คลังทหาร +%d" % [e.number, int(inc.get(Campaign.player_side, 0))])
 		"over":
 			_show_end(e.winner)
 
 
 func _check_battles() -> void:
+	if _popup == null and world.winner == "" and world.battles.is_empty() \
+			and world.council.has(Campaign.player_side):
+		_show_council()
+		return
 	if _popup != null or world.battles.is_empty() or world.winner != "":
 		return
 	var b: Dictionary = world.battles[0]
@@ -341,6 +355,115 @@ func _close_popup() -> void:
 		_popup.queue_free()
 	_popup = null
 	_popup_battle = -1
+	_in_council = false
+
+
+# --- council (every council.every_days, like DF) ------------------------------------
+# The map stops; troops come into the reserve and are handed to generals standing
+# in our own castles. Others (walking, fighting, in a castle that is not ours)
+# cannot take any this time.
+
+func _show_council() -> void:
+	_close_popup()
+	_in_council = true
+	var side := Campaign.player_side
+	var panel := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.05, 0.06, 0.11, 0.95)
+	sb.border_color = TRIM_HI
+	sb.set_border_width_all(1)
+	sb.set_content_margin_all(6)
+	panel.add_theme_stylebox_override("panel", sb)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 2)
+	panel.add_child(box)
+	_council_label(box, "ประชุมทัพ ครั้งที่ %d · วันที่ %d" % [world.councils_held, int(world.day) + 1], 9, TRIM_HI,
+			true)
+	var n_castles := world.castles_of(side).size()
+	_council_label(box, "คลังทหาร %d   (เดือนนี้ได้ +%d จาก %d ปราสาท)" % [int(world.reserve[side]),
+			world.income_of(side), n_castles], 8, TEXT, true)
+	var grid := GridContainer.new()
+	grid.columns = 6
+	grid.add_theme_constant_override("h_separation", 4)
+	grid.add_theme_constant_override("v_separation", 2)
+	box.add_child(grid)
+	var cap := int(world.rules.max_troops)
+	for g in world.generals_of(side):
+		var ok := world.can_draft(g)
+		_council_label(grid, ("★" if g.king else "") + g.name, 7, TEXT if ok else DIM, false)
+		var where: String = world.castles[g.castle].name if ok else ("เดินทาง" if g.state == "moving" else
+				("กำลังรบ" if g.state == "battle" else "นอกปราสาท"))
+		_council_label(grid, where, 7, DIM, false)
+		_council_label(grid, "%d/%d" % [int(g.troops), cap], 7, TEXT if ok else DIM, false)
+		var step := int(world.council_cfg.get("step", 5))
+		_council_button(grid, "−%d" % step, _council_draft.bind(g.id, -step), ok and g.troops >= 1)
+		_council_button(grid, "+%d" % step, _council_draft.bind(g.id, step),
+				ok and g.troops < cap and int(world.reserve[side]) > 0)
+		_council_button(grid, "เต็ม", _council_draft.bind(g.id, cap),
+				ok and g.troops < cap and int(world.reserve[side]) > 0)
+	_council_label(box, "แจกได้เฉพาะแม่ทัพที่อยู่ในปราสาทของเรา · ทหารที่ไม่แจกเก็บไว้ในคลัง", 7, DIM, true)
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 4)
+	box.add_child(row)
+	_council_button(row, "แจกอัตโนมัติ [F]", _council_auto, int(world.reserve[side]) > 0)
+	_council_button(row, "จบการประชุม [Enter]", _end_council, true)
+	_ui.add_child(panel)
+	panel.reset_size()
+	panel.position = ((SCREEN - panel.size) / 2.0).round()
+	_popup = panel
+
+
+func _council_label(parent: Control, t: String, size: int, col: Color, centre: bool) -> void:
+	var l := Label.new()
+	l.text = t
+	if centre:
+		l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	l.add_theme_font_size_override("font_size", size)
+	l.add_theme_color_override("font_color", col)
+	parent.add_child(l)
+
+
+func _council_button(parent: Control, t: String, cb: Callable, enabled: bool) -> void:
+	var b := Button.new()
+	b.text = t
+	b.focus_mode = Control.FOCUS_NONE
+	b.disabled = not enabled
+	b.add_theme_font_size_override("font_size", 7)
+	# Compact buttons so 6 generals still fit on the 320x180 screen.
+	for st in ["normal", "hover", "pressed", "disabled"]:
+		var bs := StyleBoxFlat.new()
+		bs.bg_color = {"normal": Color(0.14, 0.15, 0.24), "hover": Color(0.22, 0.24, 0.36),
+				"pressed": Color(0.3, 0.26, 0.16), "disabled": Color(0.08, 0.09, 0.13)}[st]
+		bs.border_color = TRIM if st != "disabled" else Color(0.25, 0.25, 0.3)
+		bs.set_border_width_all(1)
+		bs.content_margin_left = 3
+		bs.content_margin_right = 3
+		bs.content_margin_top = 0
+		bs.content_margin_bottom = 0
+		b.add_theme_stylebox_override(st, bs)
+	b.pressed.connect(cb)
+	parent.add_child(b)
+
+
+func _council_draft(gid: String, n: int) -> void:
+	world.draft(world.get_general(gid), n)
+	_show_council()
+
+
+## Same as the AI: fill up the weakest generals at home first.
+func _council_auto() -> void:
+	world.auto_council(Campaign.player_side)
+	_show_council()
+
+
+func _end_council() -> void:
+	_close_popup()
+	world.end_council(Campaign.player_side)
+	for e in world._take_events():
+		_on_event(e)
+	_log("จบการประชุม · คลังเหลือ %d" % int(world.reserve[Campaign.player_side]))
+	_check_battles()
 
 
 func _show_title() -> void:
@@ -779,6 +902,12 @@ func _draw_bottom(font: Font) -> void:
 		if g.troops < 0.5:
 			col = ALERT
 		_text(font, _chip_text(g), Vector2(r.position.x + 7.5, r.position.y + 7.5), 6, col, false)
+	# Reserve and days to the next council, right end of the roster row.
+	if world.next_council < INF:
+		var left := maxi(0, int(ceilf(world.next_council - world.day)))
+		var info := "คลัง %d · ประชุมอีก %d วัน" % [int(world.reserve[Campaign.player_side]), left]
+		_text(font, info, Vector2(SCREEN.x - 3 - _w(font, info, 6), BOTTOM_BAR.position.y + 10.5), 6,
+				TRIM_HI if left <= 5 else DIM, false)
 	var g := world.get_general(selected)
 	var y := BOTTOM_BAR.position.y + 22
 	if g != null:
