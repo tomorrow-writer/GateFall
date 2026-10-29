@@ -6,7 +6,7 @@
     "speeds": [1, 2, 4]
   },
   "rules": {
-    "_note": "move_speed px/day along roads · regen = troops/day for a general resting in its own castle · ai_think_days = how often the AI looks for a target",
+    "_note": "move_speed px/day along roads · max_troops = cap when there are no ranks (see ranks) · regen = troops/day for a general resting in its own castle · ai_think_days = how often the AI looks for a target",
     "move_speed": 14.0,
     "max_troops": 30,
     "regen_per_day": 0.0,
@@ -48,6 +48,21 @@
     "ai_engine_wall": 2,
     "castle_background": "res://assets/backgrounds/field_castle.png"
   },
+  "growth": {
+    "_note": "General levels (like DF). Every battle gives both generals EXP: per_troop x enemy troops they beat + win or lose (+fell_general when the enemy general fell, on the field or in the duel). EXP from level L to L+1 = exp_to_next.base + exp_to_next.per_level x (L-1). Each level above 1 adds per_level to the general's battle numbers: hp = its HP, atk = its hits and duel blows, special = its specials' damage (0.05 = +5% per level). Level 1 = battle_config.json as it is. A general may set \"level\" (default 1). Basic values, balance later.",
+    "max_level": 20,
+    "exp_to_next": {"base": 60, "per_level": 30},
+    "exp": {"per_troop": 2, "win": 20, "lose": 8, "fell_general": 15},
+    "per_level": {"hp": 0.05, "atk": 0.05, "special": 0.03}
+  },
+  "ranks": {
+    "_note": "General ranks (like DF): the rank caps the troops a general leads (max_troops per rank, lowest first; rules.max_troops is used only without ranks). level_needed = level a general must reach before it can be promoted to that rank. Promotion is the KING's council action (one per council, instead of levy / persuade / ...), for any free general of its side wherever it is; it adds reward_loyalty. The AI king promotes the highest-level general that can be, unless a prisoner would join with ai_persuade_first chance or more if the king asked. A general may set \"rank\" (index, default 0; kings default to the top rank). Max troops stay at 30 or less: formations have 30 spots. Basic values, balance later.",
+    "names": ["นายกอง", "นายพัน", "แม่ทัพ", "จอมพล"],
+    "max_troops": [15, 20, 25, 30],
+    "level_needed": [1, 3, 6, 10],
+    "reward_loyalty": 10,
+    "ai_persuade_first": 0.5
+  },
   "map_sprites": {
     "_note": "Marching armies are drawn with the battle sprite of their troops (battle_config.json sprites). Per side: sprite id, scale on the map, followers = extra troops walking behind (one per `per` troops, at most `max`). A general can set its own \"unit\" to override. The ring at the feet is the side colour (a captured general who joins keeps its own look but the colour tells the side).",
     "S": {"sprite": "slime_big", "scale": 0.5},
@@ -83,11 +98,11 @@
     ["h1", "h_cap"], ["h2", "h_cap"]
   ],
   "generals": [
-    {"id": "s_king", "name": "ราชาโอซ", "side": "S", "castle": "s_cap", "king": true},
-    {"id": "s_g1", "name": "บลูบ", "side": "S", "castle": "s1", "loyalty": 55},
-    {"id": "s_g2", "name": "มิวค์", "side": "S", "castle": "s2", "loyalty": 70},
-    {"id": "k_king", "name": "กษัตริย์อัลวาร์", "side": "K", "castle": "h_cap", "king": true},
-    {"id": "k_g1", "name": "เซอร์ดาริน", "side": "K", "castle": "h1", "loyalty": 70},
-    {"id": "k_g2", "name": "เดมไลรา", "side": "K", "castle": "h2", "loyalty": 50}
+    {"id": "s_king", "name": "ราชาโอซ", "side": "S", "castle": "s_cap", "king": true, "level": 8},
+    {"id": "s_g1", "name": "บลูบ", "side": "S", "castle": "s1", "loyalty": 55, "level": 6, "rank": 2},
+    {"id": "s_g2", "name": "มิวค์", "side": "S", "castle": "s2", "loyalty": 70, "level": 3, "rank": 1},
+    {"id": "k_king", "name": "กษัตริย์อัลวาร์", "side": "K", "castle": "h_cap", "king": true, "level": 8},
+    {"id": "k_g1", "name": "เซอร์ดาริน", "side": "K", "castle": "h1", "loyalty": 70, "level": 6, "rank": 2},
+    {"id": "k_g2", "name": "เดมไลรา", "side": "K", "castle": "h2", "loyalty": 50, "level": 3, "rank": 1}
   ]
 }

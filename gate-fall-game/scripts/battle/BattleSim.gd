@@ -134,6 +134,9 @@ class Army:
 	var auto_slot: int = -1  # slot auto_cast fires (-1 = the largest)
 	var guard: Dictionary = {}  # defence special running {take, left, total, special}; empty = none
 	var wall_take: float = 1.0  # castle walls (world map): troops' damage taken x; the general is not covered
+	var gen_hp: float = 1.0  # world-map general level: its HP x
+	var gen_atk: float = 1.0  # world-map general level: its hits and duel blows x
+	var special_power: float = 1.0  # world-map general level: its specials' damage x
 	var auto_cast: bool
 	var mp: float
 	var mp_max: float
@@ -250,9 +253,13 @@ static func load_config(path: String = "res://data/battle_config.json") -> Dicti
 
 
 ## overrides: per side id, any of {"formation", "order", "auto_cast",
-## "auto_slot", "ai", "dodge", "gcharge", "units", "wall_take"}.
+## "auto_slot", "ai", "dodge", "gcharge", "units", "wall_take", "general_hp",
+## "general_atk", "special_power"}.
 ##   wall_take: troops (not the general) take this x damage, hits and specials
 ##              alike: castle walls in a world-map battle (default 1).
+##   general_hp / general_atk / special_power: the world-map general's level
+##              (WorldSim.general_mods): its HP x, its hits and duel blows x,
+##              its specials' damage x (default 1 = the config's numbers).
 ##   auto_cast: fire special auto_slot (default: the largest) as soon as it is
 ##              ready (best lane).
 ##   ai: BattleAI decides when and where to cast (enemy side in play and in run_sims).
@@ -290,6 +297,9 @@ func _init(config: Dictionary, overrides: Dictionary = {}, shared_rng: BattleRng
 		s.auto_slot = int(ov.get("auto_slot", s.specials.size() - 1))
 		s.auto_cast = bool(ov.get("auto_cast", false))
 		s.wall_take = float(ov.get("wall_take", 1.0))
+		s.gen_hp = float(ov.get("general_hp", 1.0))
+		s.gen_atk = float(ov.get("general_atk", 1.0))
+		s.special_power = float(ov.get("special_power", 1.0))
 		s.mp = float(sd.mp_start)
 		s.mp_max = float(sd.mp_max)
 		s.wave = {}
@@ -363,6 +373,11 @@ func _init(config: Dictionary, overrides: Dictionary = {}, shared_rng: BattleRng
 			continue
 		var s := sides[i]
 		var g := _make_unit(s, sd.general)
+		if s.gen_hp != 1.0:
+			g.hp *= s.gen_hp
+			g.max_hp = g.hp
+		if s.gen_atk != 1.0:
+			g.atk *= s.gen_atk
 		var gx := float(sd.general_spot[0])
 		g.x = gx if s.facing == 1 else float(_field.width) - gx
 		g.y = float(sd.general_spot[1])
@@ -922,6 +937,7 @@ func special_damage(s: Army, u: Unit, travelled: float, sp: Dictionary = {}) -> 
 	var dmg := float(sp.get("damage", 0))
 	if u.is_general and sp.has("damage_general"):
 		dmg = float(sp.damage_general)
+	dmg *= s.special_power
 	var rng_px := float(sp.get("range", 0))
 	if rng_px > 0.0:
 		var k := clampf(travelled / rng_px, 0.0, 1.0)
@@ -1057,6 +1073,8 @@ func duel_style(g: Unit) -> Dictionary:
 	var d: Dictionary = cfg.units.get(g.type_id, {}).get("duel", {})
 	for k in d:
 		st[k] = d[k]
+	if d.has("power") and g.side.gen_atk != 1.0:
+		st.power = float(st.power) * g.side.gen_atk  # the default (atk x 2) already has it
 	return st
 
 

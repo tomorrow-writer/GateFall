@@ -42,6 +42,16 @@
 ##     council; the chance grows each council it stays captive and falls with
 ##     its loyalty. Kings never join. A general who joins keeps its own look
 ##     (`origin`) but fights for its new side, starting with no troops.
+##   - levels (like DF): each general has a level and EXP. Every battle gives
+##     EXP to both generals (troops they beat, a win, felling the enemy
+##     general); enough EXP = level up. Each level above 1 makes the general
+##     tougher in battle (growth.per_level: its HP, its hits and duel blows,
+##     its specials), sent to BattleSim through battle_mods().
+##   - ranks: the rank caps the troops a general leads (ranks.max_troops). A
+##     general whose level reached the next rank's level_needed can be
+##     promoted at a council by the KING, as the king's one action there
+##     ("reward", raises loyalty too). The king may promote anyone of its
+##     side who is not a prisoner, wherever it is.
 extends RefCounted
 
 
@@ -62,6 +72,9 @@ class General:
 	var held_by := ""  # captured: the side holding it
 	var captive_councils := 0  # councils held since it was captured
 	var engine := false  # drags a siege engine (slow; cuts a castle's walls once)
+	var level := 1  # 1..growth.max_level: makes the general tougher in battle
+	var xp := 0.0  # EXP toward the next level
+	var rank := 0  # index into ranks: caps the troops it leads
 
 	func target() -> String:
 		return str(path[-1]) if not path.is_empty() else castle
@@ -83,8 +96,11 @@ var councils_held := 0
 var next_council := INF
 var prisoner_cfg: Dictionary
 var siege_cfg: Dictionary
+var growth_cfg: Dictionary
+var rank_cfg: Dictionary
 var fortified := {}  # castle id -> true once its wall was raised this council
-var acted := {}  # general id -> what it did this council ("levy", "persuade_ok", "persuade_fail", "joined")
+var acted := {}  # general id -> what it did this council ("levy", "persuade_ok", "persuade_fail", "joined", "fortify", "engine", "promote")
+var promoted := {}  # general id -> true once promoted this council
 var tried := {}  # prisoner id -> true once someone tried to persuade it this council
 var rng := RandomNumberGenerator.new()
 var _council_open := false  # actions only count while a council is on
@@ -111,6 +127,8 @@ func _init(map_data: Dictionary, ai: Array = [], seed_value: int = 0) -> void:
 	data = map_data
 	prisoner_cfg = data.get("prisoners", {})
 	siege_cfg = data.get("siege", {})
+	growth_cfg = data.get("growth", {})
+	rank_cfg = data.get("ranks", {})
 	rules = data.rules
 	ai_sides = ai
 	for c in data.castles:
@@ -129,7 +147,9 @@ func _init(map_data: Dictionary, ai: Array = [], seed_value: int = 0) -> void:
 		g.king = bool(gd.get("king", false))
 		g.origin = g.side
 		g.loyalty = int(gd.get("loyalty", 100 if g.king else int(prisoner_cfg.get("default_loyalty", 60))))
-		g.troops = float(gd.get("troops", rules.max_troops))
+		g.level = clampi(int(gd.get("level", 1)), 1, max_level())
+		g.rank = clampi(int(gd.get("rank", rank_count() - 1 if g.king else 0)), 0, maxi(0, rank_count() - 1))
+		g.troops = float(gd.get("troops", max_troops_of(g)))
 		g.castle = gd.castle
 		g.from = gd.castle
 		g.pos = castles[gd.castle].pos
@@ -451,9 +471,9 @@ func _crossed(a: General, b: General, before: Dictionary) -> bool:
 
 
 func _regen(days: float) -> void:
-	var cap := float(rules.max_troops)
 	var per := float(rules.regen_per_day)
 	for g in generals:
+		var cap := float(max_troops_of(g))
 		if g.state == "idle" and castles[g.castle].owner == g.side and g.troops < cap:
 			g.troops = minf(cap, g.troops + per * days)
 
@@ -471,6 +491,7 @@ func resolve_battle(id: int, winner_side: String, left: Dictionary, fell: Dictio
 	battles.erase(b)
 	var a := get_general(b.a)
 	var d := get_general(b.d)
+	var before := {a.id: a.troops, d.id: d.troops}
 	for g in [a, d]:
 		g.troops = minf(g.troops, float(left.get(g.side, g.troops)))
 	var won: General = d  # draw: the attacker turns back, the defender holds
@@ -480,6 +501,8 @@ func resolve_battle(id: int, winner_side: String, left: Dictionary, fell: Dictio
 		lost = d
 	_events.append({"type": "battle_end", "battle": id, "winner": winner_side, "won": won.id, "lost": lost.id,
 			"castle": b.castle})
+	_battle_exp(a, d, float(before[d.id]) - d.troops, winner_side, fell)
+	_battle_exp(d, a, float(before[a.id]) - a.troops, winner_side, fell)
 	if b.castle != "" and a.engine and bool(b.get("engine", false)):
 		a.engine = false  # spent on this castle's walls, won or lost
 		_events.append({"type": "engine_spent", "general": a.id, "castle": b.castle})
@@ -593,7 +616,7 @@ func draft(g: General, n: int) -> int:
 	var have := int(floorf(g.troops))
 	var moved := 0
 	if n > 0:
-		moved = mini(n, mini(int(reserve[g.side]), int(rules.max_troops) - have))
+		moved = mini(n, mini(int(reserve[g.side]), max_troops_of(g) - have))
 	else:
 		moved = -mini(-n, have)
 	if moved == 0:
@@ -608,6 +631,7 @@ func _start_council() -> void:
 	_council_open = true
 	acted.clear()
 	tried.clear()
+	promoted.clear()
 	fortified.clear()
 	for g in generals:
 		if g.state == "captured":
@@ -660,7 +684,7 @@ func auto_draft(side: String) -> void:
 	for g in home:
 		if int(reserve[side]) <= 0:
 			break
-		draft(g, int(rules.max_troops))
+		draft(g, max_troops_of(g))
 
 
 # --- council actions (one per general per council) --------------------------------
@@ -737,10 +761,11 @@ func persuade(by: General, p: General) -> bool:
 	return true
 
 
-## AI actions: the best persuader (highest chance) tries each prisoner; the
-## rest build an engine (walled enemy castle next door), raise the wall of a
+## AI actions: the king promotes (see _ai_promote); the best persuader
+## (highest chance) tries each prisoner; the rest build an engine (walled enemy castle next door), raise the wall of a
 ## border castle, or levy.
 func auto_actions(side: String) -> void:
+	_ai_promote(side)
 	for p in prisoners_of(side):
 		var best: General = null
 		var best_c := 0.0
@@ -810,12 +835,22 @@ func siege_info(b: Dictionary) -> Dictionary:
 	return info
 
 
-## BattleSim overrides the walls add to a battle: {side: {"wall_take": x}}.
+## BattleSim overrides for a battle, per side: the walls ({"wall_take": x})
+## and each general's level (general_mods).
 func battle_mods(b: Dictionary) -> Dictionary:
+	var out := {}
+	for gid in [b.a, b.d]:
+		var g := get_general(str(gid))
+		var m := general_mods(g)
+		if not m.is_empty():
+			out[g.side] = m
 	var info := siege_info(b)
-	if float(info.take) >= 1.0:
-		return {}
-	return {str(info.side): {"wall_take": float(info.take)}}
+	if float(info.take) < 1.0:
+		var side := str(info.side)
+		var m: Dictionary = out.get(side, {})
+		m["wall_take"] = float(info.take)
+		out[side] = m
+	return out
 
 
 ## Council action: raise the wall of the castle g stands in by one level
@@ -883,7 +918,7 @@ func _ai_think(side: String) -> void:
 		if g.side == side and g.state == "moving":
 			claimed[g.target()] = true
 	for g in generals:
-		if g.side != side or g.state != "idle" or g.king or g.troops < min_troops:
+		if g.side != side or g.state != "idle" or g.king or g.troops < minf(min_troops, max_troops_of(g)):
 			continue
 		var best := ""
 		var best_score := INF
@@ -908,3 +943,135 @@ func _ai_think(side: String) -> void:
 				best = c.id
 		if best != "" and order_move(g, best):
 			claimed[best] = true
+
+
+# --- levels, EXP and ranks -------------------------------------------------------------
+
+func max_level() -> int:
+	return int(growth_cfg.get("max_level", 1))
+
+
+func rank_count() -> int:
+	return (rank_cfg.get("max_troops", []) as Array).size()
+
+
+## Troops g may lead: its rank's cap (rules.max_troops without ranks).
+func max_troops_of(g: General) -> int:
+	var caps: Array = rank_cfg.get("max_troops", [])
+	if caps.is_empty():
+		return int(rules.max_troops)
+	return int(caps[clampi(g.rank, 0, caps.size() - 1)])
+
+
+func rank_name(g: General) -> String:
+	var names: Array = rank_cfg.get("names", [])
+	return str(names[clampi(g.rank, 0, names.size() - 1)]) if not names.is_empty() else ""
+
+
+## EXP from level L to L + 1 (0 = already at max level).
+func exp_to_next(level: int) -> float:
+	if level >= max_level():
+		return 0.0
+	var e: Dictionary = growth_cfg.get("exp_to_next", {})
+	return float(e.get("base", 100)) + float(e.get("per_level", 0)) * (level - 1)
+
+
+## BattleSim overrides for g's level: {"general_hp", "general_atk",
+## "special_power"} (empty at level 1 = the battle config's own numbers).
+func general_mods(g: General) -> Dictionary:
+	if g == null or g.level <= 1:
+		return {}
+	var per: Dictionary = growth_cfg.get("per_level", {})
+	var n := float(g.level - 1)
+	return {"general_hp": 1.0 + float(per.get("hp", 0)) * n,
+			"general_atk": 1.0 + float(per.get("atk", 0)) * n,
+			"special_power": 1.0 + float(per.get("special", 0)) * n}
+
+
+## EXP for g after a battle against `foe`: per enemy troop it beat, + win or
+## loss, + felling the enemy general. Levels up as far as the EXP goes.
+func _battle_exp(g: General, foe: General, killed: float, winner_side: String, fell: Dictionary) -> void:
+	var e: Dictionary = growth_cfg.get("exp", {})
+	if e.is_empty() or g.level >= max_level():
+		return
+	var gain := maxf(0.0, killed) * float(e.get("per_troop", 0))
+	if winner_side == g.side:
+		gain += float(e.get("win", 0))
+		if bool(fell.get(foe.side, false)):
+			gain += float(e.get("fell_general", 0))
+	else:
+		gain += float(e.get("lose", 0))
+	add_exp(g, gain)
+
+
+func add_exp(g: General, amount: float) -> void:
+	if amount <= 0.0 or g.level >= max_level():
+		return
+	g.xp += amount
+	while g.level < max_level() and g.xp >= exp_to_next(g.level):
+		g.xp -= exp_to_next(g.level)
+		g.level += 1
+		_events.append({"type": "level_up", "general": g.id, "level": g.level})
+	if g.level >= max_level():
+		g.xp = 0.0
+
+
+## Level g needs for its next rank (0 = top rank already).
+func next_rank_level(g: General) -> int:
+	var need: Array = rank_cfg.get("level_needed", [])
+	if g.rank + 1 >= rank_count() or g.rank + 1 >= need.size():
+		return 0
+	return int(need[g.rank + 1])
+
+
+## The side's king, if it is free (not a prisoner).
+func king_of(side: String) -> General:
+	for g in generals_of(side):
+		if g.king:
+			return g
+	return null
+
+
+## Can the king promote g now? The king must be able to act (at home, council
+## on, not acted yet); g must be of its side, free, not the king, not at the
+## top rank, with the level the next rank needs.
+func can_promote(g: General) -> bool:
+	if g == null or g.king or g.state == "captured" or promoted.has(g.id):
+		return false
+	var k := king_of(g.side)
+	if k == null or not can_act(k):
+		return false
+	var need := next_rank_level(g)
+	return need > 0 and g.level >= need
+
+
+## Council action of the king: promote g one rank (more troops it may lead)
+## and raise its loyalty.
+func promote(g: General) -> bool:
+	if not can_promote(g):
+		return false
+	var k := king_of(g.side)
+	g.rank += 1
+	g.loyalty = mini(100, g.loyalty + int(rank_cfg.get("reward_loyalty", 0)))
+	promoted[g.id] = true
+	acted[k.id] = "promote"
+	_events.append({"type": "promote", "general": g.id, "by": k.id, "rank": g.rank})
+	return true
+
+
+## AI: the king promotes the highest-level general that can be, unless one of
+## our prisoners is likely enough to join if the king asks
+## (ranks.ai_persuade_first): then the king persuades instead.
+func _ai_promote(side: String) -> void:
+	var k := king_of(side)
+	if k == null or not can_act(k):
+		return
+	for p in prisoners_of(side):
+		if recruit_chance(p, k) >= float(rank_cfg.get("ai_persuade_first", 0.5)):
+			return
+	var best: General = null
+	for g in generals_of(side):
+		if can_promote(g) and (best == null or g.level > best.level):
+			best = g
+	if best != null:
+		promote(best)

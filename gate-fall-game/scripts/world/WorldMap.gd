@@ -263,6 +263,14 @@ func _on_event(e: Dictionary) -> void:
 			_log("เครื่องตีกำแพงของ %s ใช้หมดแล้วที่ %s" % [who, world.castles[e.castle].name], mine)
 		"engine_lost":
 			_log("เครื่องตีกำแพงของ %s ถูกเผากลางทาง" % who, mine)
+		"level_up":
+			if mine:
+				_log("%s เลเวลขึ้นเป็น Lv%d" % [who, int(e.level)])
+		"promote":
+			if mine:
+				_log("%s ได้เลื่อนยศเป็น %s (ทหารสูงสุด %d)" % [who, world.rank_name(g), world.max_troops_of(g)])
+			else:
+				_log("ศัตรูเลื่อนยศ %s เป็น %s" % [who, world.rank_name(g)])
 		"council":
 			var inc: Dictionary = e.income
 			_log("ประชุมทัพครั้งที่ %d · คลังทหาร +%d" % [e.number, int(inc.get(Campaign.player_side, 0))])
@@ -288,7 +296,8 @@ func _check_battles() -> void:
 	var where: String = ("ที่ " + world.castles[b.castle].name) if b.castle != "" else "กลางทาง"
 	var who_attacks := "เราบุก" if mine == a else "ศัตรูบุก"
 	_popup_battle = int(b.id)
-	var body := "%s  ทหาร %d\nvs\n%s  ทหาร %d\n%s" % [mine.name, int(mine.troops), theirs.name, int(theirs.troops), where]
+	var body := "%s Lv%d  ทหาร %d\nvs\n%s Lv%d  ทหาร %d\n%s" % [mine.name, mine.level, int(mine.troops), theirs.name,
+			theirs.level, int(theirs.troops), where]
 	var siege := _siege_text(b)
 	if siege != "":
 		body += "\n" + siege
@@ -321,7 +330,7 @@ func _fight(id: int) -> void:
 		return
 	var a := world.get_general(b.a)
 	var d := world.get_general(b.d)
-	var names := {a.side: a.name, d.side: d.name}
+	var names := {a.side: "%s Lv%d" % [a.name, a.level], d.side: "%s Lv%d" % [d.name, d.level]}
 	_close_popup()
 	Campaign.map_selected = selected
 	Campaign.map_speed = speed_i
@@ -443,15 +452,15 @@ func _show_council() -> void:
 	grid.add_theme_constant_override("h_separation", 4)
 	grid.add_theme_constant_override("v_separation", 2)
 	box.add_child(grid)
-	var cap := int(world.rules.max_troops)
 	var step := int(world.council_cfg.get("step", 5))
 	for g in world.generals_of(side):
 		var ok := world.can_draft(g)
-		_council_label(grid, ("★" if g.king else "") + g.name, 7, TEXT if ok else DIM, false)
+		var cap := world.max_troops_of(g)
+		_council_label(grid, "%s%s Lv%d" % ["★" if g.king else "", g.name, g.level], 7, TEXT if ok else DIM, false)
 		var where: String = world.castles[g.castle].name if ok else ("เดินทาง" if g.state == "moving" else
 				("กำลังรบ" if g.state == "battle" else "นอกปราสาท"))
 		if ok and int(world.castles[g.castle].wall) > 0:
-			where += " Lv%d" % int(world.castles[g.castle].wall)
+			where += " ก.%d" % int(world.castles[g.castle].wall)  # wall level ("Lv" is the general's)
 		_council_label(grid, where, 7, DIM, false)
 		_council_label(grid, "%d/%d%s" % [int(g.troops), cap, " +ตี" if g.engine else ""], 7, TEXT if ok else DIM,
 				false)
@@ -475,6 +484,25 @@ func _show_council() -> void:
 			elif world.tried.has(p.id):
 				t += " (ลองแล้ว)"
 			_council_button(prow, t, _council_pick.bind(p.id), not p.king)
+	# Promotions: the king's one action this council, for any general of ours
+	# whose level reached the next rank.
+	var can_rise := []
+	for g in world.generals_of(side):
+		var need := world.next_rank_level(g)
+		if not g.king and need > 0 and g.level >= need:
+			can_rise.append(g)
+	if not can_rise.is_empty():
+		var rrow := HBoxContainer.new()
+		rrow.alignment = BoxContainer.ALIGNMENT_CENTER
+		rrow.add_theme_constant_override("separation", 3)
+		box.add_child(rrow)
+		_council_label(rrow, "เลื่อนยศ (คำสั่งกษัตริย์):", 7, TRIM_HI, false)
+		var names: Array = world.rank_cfg.get("names", [])
+		var caps: Array = world.rank_cfg.get("max_troops", [])
+		for g in can_rise:
+			var t := "%s→%s %d" % [g.name, str(names[g.rank + 1]) if g.rank + 1 < names.size() else "?",
+					int(caps[g.rank + 1]) if g.rank + 1 < caps.size() else 0]
+			_council_button(rrow, t, _council_promote.bind(g.id), world.can_promote(g))
 	var taken := PackedStringArray()
 	for p in world.prisoners_of(WorldSim.other_side(side)):
 		taken.append(p.name)
@@ -506,7 +534,8 @@ func _council_action_cell(grid: GridContainer, g, target) -> void:
 	if world.acted.has(g.id):
 		var what := str(world.acted[g.id])
 		var done: String = {"levy": "เกณฑ์แล้ว", "persuade_ok": "ชวนสำเร็จ", "persuade_fail": "ชวนไม่สำเร็จ",
-				"joined": "เพิ่งเข้าร่วม", "fortify": "สร้างกำแพงแล้ว", "engine": "สร้างเครื่องตีแล้ว"}.get(what, "สั่งแล้ว")
+				"joined": "เพิ่งเข้าร่วม", "fortify": "สร้างกำแพงแล้ว", "engine": "สร้างเครื่องตีแล้ว",
+				"promote": "ปูนบำเหน็จแล้ว"}.get(what, "สั่งแล้ว")
 		_council_label(cell, done, 7, TRIM_HI if what == "persuade_ok" else DIM, false)
 		return
 	_council_button(cell, "เกณฑ์+%d" % world.levy_amount(), _council_levy.bind(g.id), world.levy_amount() > 0)
@@ -576,6 +605,14 @@ func _council_fortify(gid: String) -> void:
 ## Action: build a siege engine the general takes on its next march.
 func _council_engine(gid: String) -> void:
 	world.build_engine(world.get_general(gid))
+	for e in world._take_events():
+		_on_event(e)
+	_show_council()
+
+
+## The king's action: promote the general one rank.
+func _council_promote(gid: String) -> void:
+	world.promote(world.get_general(gid))
 	for e in world._take_events():
 		_on_event(e)
 	_show_council()
