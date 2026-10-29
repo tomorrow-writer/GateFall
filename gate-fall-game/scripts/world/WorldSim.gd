@@ -17,6 +17,11 @@
 ##     only); no way home = captured
 ##   - a general resting in its own castle gets troops back over time
 ##   - take the enemy capital (or capture all its generals) = win the war
+##   - every council.every_days the map stops for a council (like DF): each
+##     side's reserve gets troops per castle it owns, and generals standing in
+##     their own castles take troops from it (or hand them back). AI sides
+##     settle theirs at once; a human side keeps the map stopped until
+##     end_council() (`council` lists the sides still deciding).
 extends RefCounted
 
 
@@ -46,6 +51,11 @@ var day := 0.0
 var ai_sides: Array = []
 var winner := ""  # "" while the war goes on, then a side id
 var battles: Array = []  # queued: {id, a, d, castle} (a, d = general ids, castle "" = on a road)
+var council_cfg: Dictionary
+var reserve := {"S": 0, "K": 0}  # troops waiting to be handed out, per side
+var council: Array = []  # human sides still in the council (the map waits for them)
+var councils_held := 0
+var next_council := INF
 
 var _next_battle := 1
 var _events: Array = []
@@ -83,6 +93,11 @@ func _init(map_data: Dictionary, ai: Array = []) -> void:
 		g.from = gd.castle
 		g.pos = castles[gd.castle].pos
 		generals.append(g)
+	council_cfg = data.get("council", {})
+	if not council_cfg.is_empty():
+		next_council = float(council_cfg.get("every_days", 30))
+		for side in reserve:
+			reserve[side] = int(council_cfg.get("start", 0))
 
 
 # --- queries --------------------------------------------------------------------
@@ -221,7 +236,11 @@ func order_move(g: General, target: String) -> bool:
 
 ## Advance the world by `days`. Does nothing while a battle waits to be settled.
 func step(days: float) -> Array:
-	if winner != "" or not battles.is_empty():
+	if winner != "" or not battles.is_empty() or not council.is_empty():
+		return _take_events()
+	if day + days >= next_council:
+		day = next_council
+		_start_council()
 		return _take_events()
 	day += days
 	var speed := float(rules.move_speed)
@@ -425,6 +444,85 @@ func _end_war(side: String) -> void:
 		return
 	winner = side
 	_events.append({"type": "over", "winner": side})
+
+
+# --- council ----------------------------------------------------------------------
+
+## Troops a side's reserve gets at each council: per castle owned, + capital.
+func income_of(side: String) -> int:
+	var n := 0
+	for cid in castles_of(side):
+		n += int(council_cfg.get("income_per_castle", 0))
+		if castles[cid].capital:
+			n += int(council_cfg.get("capital_bonus", 0))
+	return n
+
+
+## Only a general standing in one of its own castles can take or hand back troops.
+func can_draft(g: General) -> bool:
+	return g != null and g.state == "idle" and g.castle != "" and castles[g.castle].owner == g.side
+
+
+## Move up to n troops from the side's reserve to g (n < 0 = back to the
+## reserve). Returns how many actually moved (same sign as n).
+func draft(g: General, n: int) -> int:
+	if not can_draft(g) or n == 0:
+		return 0
+	var have := int(floorf(g.troops))
+	var moved := 0
+	if n > 0:
+		moved = mini(n, mini(int(reserve[g.side]), int(rules.max_troops) - have))
+	else:
+		moved = -mini(-n, have)
+	if moved == 0:
+		return 0
+	g.troops = float(have + moved)
+	reserve[g.side] = int(reserve[g.side]) - moved
+	return moved
+
+
+func _start_council() -> void:
+	councils_held += 1
+	var income := {}
+	for side in ["S", "K"]:
+		if generals_of(side).is_empty():
+			continue
+		income[side] = income_of(side)
+		reserve[side] = int(reserve[side]) + income[side]
+		if side in ai_sides:
+			auto_council(side)
+		else:
+			council.append(side)
+	_events.append({"type": "council", "number": councils_held, "income": income})
+	if council.is_empty():
+		_next_council()
+
+
+## A human side is done with the council. The map goes on once nobody is left.
+func end_council(side: String) -> void:
+	if not council.has(side):
+		return
+	council.erase(side)
+	if council.is_empty():
+		_next_council()
+
+
+func _next_council() -> void:
+	next_council = day + float(council_cfg.get("every_days", 30))
+	_events.append({"type": "council_end", "number": councils_held})
+
+
+## Basic AI council: fill up the weakest generals standing at home first.
+func auto_council(side: String) -> void:
+	var home: Array[General] = []
+	for g in generals_of(side):
+		if can_draft(g):
+			home.append(g)
+	home.sort_custom(func(a, b): return a.troops < b.troops)
+	for g in home:
+		if int(reserve[side]) <= 0:
+			break
+		draft(g, int(rules.max_troops))
 
 
 # --- AI -------------------------------------------------------------------------

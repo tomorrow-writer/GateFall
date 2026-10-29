@@ -9,11 +9,19 @@
     "_note": "move_speed px/day along roads · regen = troops/day for a general resting in its own castle · ai_think_days = how often the AI looks for a target",
     "move_speed": 14.0,
     "max_troops": 30,
-    "regen_per_day": 2.0,
+    "regen_per_day": 0.0,
     "meet_distance": 5.0,
     "ai_think_days": 1.0,
     "ai_min_troops": 20,
     "ai_odds": 1.1
+  },
+  "council": {
+    "_note": "Every `every_days` the map stops for a council (like DF): troops come into each side's reserve and are handed to generals standing in their own castles. income = troops per owned castle per council (+capital_bonus for the capital) · start = reserve at the start of the war · step = troops per click. regen_per_day in rules is 0 now: troops only come back through the council. Basic values, balance later.",
+    "every_days": 30,
+    "income_per_castle": 5,
+    "capital_bonus": 5,
+    "start": 10,
+    "step": 5
   },
   "map_sprites": {
     "_note": "Marching armies are drawn with the battle sprite of their troops (battle_config.json sprites). Per side: sprite id, scale on the map, followers = extra troops walking behind (one per `per` troops, at most `max`). A general can set its own \"unit\" to override. The ring at the feet is the side colour (a captured general who joins keeps its own look but the colour tells the side).",

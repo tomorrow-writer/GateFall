@@ -51,8 +51,8 @@ func _init() -> void:
 						print(_line(w, e))
 		wins[w.winner] += 1
 		days += w.day
-		print("war %d: winner %s day %.0f castles S%d K%d" % [r, w.winner if w.winner != "" else "-", w.day,
-				w.castles_of("S").size(), w.castles_of("K").size()])
+		print("war %d: winner %s day %.0f castles S%d K%d councils %d" % [r, w.winner if w.winner != "" else "-",
+				w.day, w.castles_of("S").size(), w.castles_of("K").size(), w.councils_held])
 	print("S %d · K %d · none %d · avg %.0f days · %.1f battles/war · %.1fs" % [wins.S, wins.K, wins[""],
 			days / runs, float(fights) / runs, (Time.get_ticks_msec() - t0) / 1000.0])
 	quit()
@@ -71,6 +71,9 @@ func _line(w: WorldSim, e: Dictionary) -> String:
 			return "day %.1f %s retreats to %s" % [w.day, who, w.castles[e.to].name]
 		"captured":
 			return "day %.1f %s captured" % [w.day, who]
+		"council":
+			return "day %.1f COUNCIL #%d income %s reserve %s troops S%d K%d" % [w.day, e.number, e.income, w.reserve,
+					w.troops_of("S"), w.troops_of("K")]
 		"over":
 			return "day %.1f WAR OVER: %s" % [w.day, e.winner]
 	return "day %.1f %s %s %s" % [w.day, e.type, who, at]
