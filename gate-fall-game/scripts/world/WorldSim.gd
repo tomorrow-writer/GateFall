@@ -292,6 +292,7 @@ func _capture(cid: String, g: General, passing := false) -> void:
 		g.state = "idle"
 		g.castle = cid
 		g.path.clear()
+		g.retreating = false
 	_events.append({"type": "capture", "general": g.id, "castle": cid, "from": was})
 	if c.capital and was != "":
 		_end_war(g.side)
@@ -300,6 +301,10 @@ func _capture(cid: String, g: General, passing := false) -> void:
 func _start_battle(a: General, d: General, cid: String) -> void:
 	a.state = "battle"
 	d.state = "battle"
+	# A general caught on its way home fights like anyone else: after the
+	# battle it is either sent home again (lost) or free to take orders (won).
+	a.retreating = false
+	d.retreating = false
 	var b := {"id": _next_battle, "a": a.id, "d": d.id, "castle": cid}
 	_next_battle += 1
 	battles.append(b)
@@ -395,9 +400,18 @@ func _send_home(g: General, avoid: String = "") -> void:
 		return
 	g.from = best[0]
 	g.path = best.slice(1) if g.pos.distance_to(castles[best[0]].pos) < 0.5 else best
+	_events.append({"type": "retreat", "general": g.id, "to": best[-1]})
+	if g.path.is_empty():
+		# Already standing at home (beaten right outside its own castle): it is
+		# in. Left "moving" with no road ahead it would never arrive.
+		g.pos = castles[best[0]].pos
+		g.castle = best[0]
+		g.state = "idle"
+		g.retreating = false
+		_events.append({"type": "arrive", "general": g.id, "castle": best[0]})
+		return
 	g.state = "moving"
 	g.retreating = true
-	_events.append({"type": "retreat", "general": g.id, "to": best[-1]})
 
 
 func _check_wipeout() -> void:
