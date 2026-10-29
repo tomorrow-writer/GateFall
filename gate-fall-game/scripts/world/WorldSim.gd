@@ -25,6 +25,17 @@
 ##   - council actions (like DF): each general standing in its own castle may do
 ##     ONE thing per council: levy (troops into the reserve) or persuade a
 ##     prisoner to join. Handing out troops from the reserve is free.
+##   - walls (like a siege in DF): each castle has a wall level 0..siege.wall_max.
+##     A general in its own castle may spend its council action to raise it
+##     by 1 (once per castle per council). Troops defending a castle they own
+##     take siege.wall_take_per_level less damage per level (not the general,
+##     not the duel). Taking a castle knocks siege.wall_lost_on_capture off.
+##     Road battles have no walls.
+##   - siege engine: a council action too. The general drags it along
+##     (siege.engine_speed x march speed); attacking a walled castle it cancels
+##     siege.engine_cancels wall levels for that battle, then it is spent (won
+##     or lost; a castle with no wall leaves it for the next). Useless on a
+##     road, and lost if the general loses a road battle or is taken.
 ##   - prisoners: a beaten general whose general fell in battle (not one that
 ##     pulled out) is taken with chance prisoners.capture_if_fell; no way home =
 ##     always taken. The captor keeps it (`held_by`) and may persuade it at each
@@ -50,6 +61,7 @@ class General:
 	var loyalty := 60  # 0-100: how hard it is to persuade once captured
 	var held_by := ""  # captured: the side holding it
 	var captive_councils := 0  # councils held since it was captured
+	var engine := false  # drags a siege engine (slow; cuts a castle's walls once)
 
 	func target() -> String:
 		return str(path[-1]) if not path.is_empty() else castle
@@ -57,7 +69,7 @@ class General:
 
 var data: Dictionary
 var rules: Dictionary
-var castles := {}  # id -> {id, name, pos: Vector2, owner, capital}
+var castles := {}  # id -> {id, name, pos: Vector2, owner, capital, wall}
 var adj := {}  # castle id -> [castle ids]
 var generals: Array[General] = []
 var day := 0.0
@@ -70,6 +82,8 @@ var council: Array = []  # human sides still in the council (the map waits for t
 var councils_held := 0
 var next_council := INF
 var prisoner_cfg: Dictionary
+var siege_cfg: Dictionary
+var fortified := {}  # castle id -> true once its wall was raised this council
 var acted := {}  # general id -> what it did this council ("levy", "persuade_ok", "persuade_fail", "joined")
 var tried := {}  # prisoner id -> true once someone tried to persuade it this council
 var rng := RandomNumberGenerator.new()
@@ -96,11 +110,13 @@ func _init(map_data: Dictionary, ai: Array = [], seed_value: int = 0) -> void:
 		rng.randomize()
 	data = map_data
 	prisoner_cfg = data.get("prisoners", {})
+	siege_cfg = data.get("siege", {})
 	rules = data.rules
 	ai_sides = ai
 	for c in data.castles:
 		castles[c.id] = {"id": c.id, "name": c.name, "pos": Vector2(c.pos[0], c.pos[1]),
-				"owner": str(c.get("owner", "")), "capital": bool(c.get("capital", false))}
+				"owner": str(c.get("owner", "")), "capital": bool(c.get("capital", false)),
+				"wall": clampi(int(c.get("wall", 0)), 0, wall_max())}
 		adj[c.id] = []
 	for r in data.roads:
 		adj[r[0]].append(r[1])
@@ -269,13 +285,14 @@ func step(days: float) -> Array:
 		return _take_events()
 	day += days
 	var speed := float(rules.move_speed)
+	var before := _road_snapshot()
 	for g in generals:
 		if g.state == "moving":
-			_walk(g, days * speed)
+			_walk(g, days * speed * (engine_speed() if g.engine else 1.0))
 			if not battles.is_empty() or winner != "":
 				break
 	if battles.is_empty():
-		_check_meetings()
+		_check_meetings(before)
 	_regen(days)
 	if not ai_sides.is_empty():
 		_ai_acc += days
@@ -332,6 +349,8 @@ func _capture(cid: String, g: General, passing := false) -> void:
 	var c: Dictionary = castles[cid]
 	var was: String = c.owner
 	c.owner = g.side
+	if was != g.side:
+		c.wall = maxi(0, int(c.wall) - int(siege_cfg.get("wall_lost_on_capture", 1)))
 	if not passing:
 		g.state = "idle"
 		g.castle = cid
@@ -349,14 +368,21 @@ func _start_battle(a: General, d: General, cid: String) -> void:
 	# battle it is either sent home again (lost) or free to take orders (won).
 	a.retreating = false
 	d.retreating = false
-	var b := {"id": _next_battle, "a": a.id, "d": d.id, "castle": cid}
+	# engine: the attacker brought one to a walled castle (it is spent after;
+	# a castle with no wall leaves it for the next one).
+	var walled: bool = cid != "" and castles[cid].owner == d.side and int(castles[cid].wall) > 0
+	var b := {"id": _next_battle, "a": a.id, "d": d.id, "castle": cid, "engine": walled and a.engine}
 	_next_battle += 1
 	battles.append(b)
 	_events.append({"type": "battle", "battle": b.id})
 
 
 ## Enemy generals walking the same road (either way) close enough = battle.
-func _check_meetings() -> void:
+## Also a battle when they passed each other inside this step (a big step, or
+## fast speed, can carry two marches straight through each other without ever
+## being within meet_distance at the end of the step). `before` comes from
+## _road_snapshot() taken before anyone walked.
+func _check_meetings(before: Dictionary = {}) -> void:
 	var walkers: Array[General] = []
 	for g in generals:
 		if g.state == "moving" and not g.retreating and not g.path.is_empty():
@@ -370,9 +396,58 @@ func _check_meetings() -> void:
 				continue
 			var same_road: bool = (a.from == b.from and a.path[0] == b.path[0]) \
 					or (a.from == b.path[0] and a.path[0] == b.from)
-			if same_road and a.pos.distance_to(b.pos) <= meet:
+			if not same_road:
+				continue
+			if a.pos.distance_to(b.pos) <= meet or _crossed(a, b, before):
 				_start_battle(a, b, "")
 				return
+
+
+## Where every walker stood, and on which road, before this step's walk.
+func _road_snapshot() -> Dictionary:
+	var out := {}
+	for g in generals:
+		if g.state == "moving" and not g.path.is_empty():
+			out[g.id] = {"pos": g.pos, "road": _road_key(g.from, str(g.path[0]))}
+	return out
+
+
+## Same key for a road whichever way it is walked.
+func _road_key(x: String, y: String) -> String:
+	return x + "|" + y if x < y else y + "|" + x
+
+
+## True if a and b (on the same road now) were on that same road before the
+## step too and their order along it flipped: they walked through each other.
+## They are put back at the point where they met, so the fight shows there.
+func _crossed(a: General, b: General, before: Dictionary) -> bool:
+	if not before.has(a.id) or not before.has(b.id):
+		return false
+	var road := _road_key(a.from, str(a.path[0]))
+	if str(before[a.id].road) != road or str(before[b.id].road) != road:
+		return false  # one of them only came onto this road during the step
+	var ends := road.split("|")
+	var p0: Vector2 = castles[ends[0]].pos
+	var dir: Vector2 = castles[ends[1]].pos - p0
+	var len2 := dir.length_squared()
+	if len2 <= 0.0:
+		return false
+	var pa: Vector2 = before[a.id].pos
+	var pb: Vector2 = before[b.id].pos
+	var a0: float = (pa - p0).dot(dir) / len2
+	var b0: float = (pb - p0).dot(dir) / len2
+	var a1: float = (a.pos - p0).dot(dir) / len2
+	var b1: float = (b.pos - p0).dot(dir) / len2
+	if signf(a0 - b0) == signf(a1 - b1) or a0 == b0:
+		return false
+	# Meeting point: where the gap a-b was zero, assuming both walked straight.
+	var gap0: float = a0 - b0
+	var gap1: float = a1 - b1
+	var f: float = gap0 / (gap0 - gap1)
+	var at: Vector2 = p0 + dir * (a0 + (a1 - a0) * f)
+	a.pos = at
+	b.pos = at
+	return true
 
 
 func _regen(days: float) -> void:
@@ -405,6 +480,12 @@ func resolve_battle(id: int, winner_side: String, left: Dictionary, fell: Dictio
 		lost = d
 	_events.append({"type": "battle_end", "battle": id, "winner": winner_side, "won": won.id, "lost": lost.id,
 			"castle": b.castle})
+	if b.castle != "" and a.engine and bool(b.get("engine", false)):
+		a.engine = false  # spent on this castle's walls, won or lost
+		_events.append({"type": "engine_spent", "general": a.id, "castle": b.castle})
+	elif b.castle == "" and lost.engine:
+		lost.engine = false  # beaten on the road: the winner burns it
+		_events.append({"type": "engine_lost", "general": lost.id})
 	if winner_side != "draw" and bool(fell.get(lost.side, false)) \
 			and rng.randf() < float(prisoner_cfg.get("capture_if_fell", 0.0)):
 		_take_prisoner(lost, won.side)
@@ -468,6 +549,7 @@ func _take_prisoner(g: General, by: String) -> void:
 	g.captive_councils = 0
 	g.castle = ""
 	g.troops = 0.0  # its army is gone
+	g.engine = false
 	g.path.clear()
 	g.retreating = false
 	_events.append({"type": "captured", "general": g.id, "by": by})
@@ -526,6 +608,7 @@ func _start_council() -> void:
 	_council_open = true
 	acted.clear()
 	tried.clear()
+	fortified.clear()
 	for g in generals:
 		if g.state == "captured":
 			g.captive_councils += 1
@@ -654,8 +737,9 @@ func persuade(by: General, p: General) -> bool:
 	return true
 
 
-## AI actions: the best persuader (highest chance) tries each prisoner, every
-## general left over levies.
+## AI actions: the best persuader (highest chance) tries each prisoner; the
+## rest build an engine (walled enemy castle next door), raise the wall of a
+## border castle, or levy.
 func auto_actions(side: String) -> void:
 	for p in prisoners_of(side):
 		var best: General = null
@@ -670,8 +754,121 @@ func auto_actions(side: String) -> void:
 		if best != null:
 			persuade(best, p)
 	for g in generals_of(side):
-		if can_act(g):
+		if not can_act(g):
+			continue
+		if _ai_wants_engine(g):
+			build_engine(g)
+		elif _ai_wants_wall(g) and (g.king or castles[g.castle].capital or rng.randf() < 0.5):
+			fortify(g)
+		else:
 			levy(g)
+
+
+# --- walls and siege engines --------------------------------------------------------
+
+func wall_max() -> int:
+	return int(siege_cfg.get("wall_max", 3))
+
+
+func engine_speed() -> float:
+	return float(siege_cfg.get("engine_speed", 0.7))
+
+
+## Damage-taken multiplier for troops behind a wall of this level (1 = none).
+func wall_take(level: int) -> float:
+	return clampf(1.0 - float(siege_cfg.get("wall_take_per_level", 0.1)) * level, 0.05, 1.0)
+
+
+## Wall level that would count if `attacker` hit castle `cid` held by `def_side`
+## (an engine cancels some). Walls only help the side that owns the castle.
+func wall_against(cid: String, def_side: String, attacker: General) -> int:
+	if cid == "" or not castles.has(cid) or castles[cid].owner != def_side:
+		return 0
+	var lv := int(castles[cid].wall)
+	if attacker != null and attacker.engine:
+		lv -= int(siege_cfg.get("engine_cancels", 2))
+	return maxi(0, lv)
+
+
+## What the walls do in a queued battle: {castle: bool, wall: castle's level,
+## used: level that counts, engine: attacker brought one, side: defender side,
+## take: defender troops' damage-taken x}.
+func siege_info(b: Dictionary) -> Dictionary:
+	var d := get_general(str(b.d))
+	var cid := str(b.get("castle", ""))
+	var info := {"castle": cid != "", "wall": 0, "used": 0, "engine": bool(b.get("engine", false)),
+			"side": d.side if d != null else "", "take": 1.0}
+	if cid == "" or d == null:
+		return info
+	var wall: int = int(castles[cid].wall) if castles[cid].owner == d.side else 0
+	info.wall = wall
+	var lv := wall
+	if bool(info.engine):
+		lv = maxi(0, lv - int(siege_cfg.get("engine_cancels", 2)))
+	info.used = lv
+	info.take = wall_take(lv)
+	return info
+
+
+## BattleSim overrides the walls add to a battle: {side: {"wall_take": x}}.
+func battle_mods(b: Dictionary) -> Dictionary:
+	var info := siege_info(b)
+	if float(info.take) >= 1.0:
+		return {}
+	return {str(info.side): {"wall_take": float(info.take)}}
+
+
+## Council action: raise the wall of the castle g stands in by one level
+## (once per castle per council).
+func can_fortify(g: General) -> bool:
+	return can_act(g) and not fortified.has(g.castle) and int(castles[g.castle].wall) < wall_max()
+
+
+func fortify(g: General) -> bool:
+	if not can_fortify(g):
+		return false
+	var c: Dictionary = castles[g.castle]
+	c.wall = int(c.wall) + 1
+	fortified[g.castle] = true
+	acted[g.id] = "fortify"
+	_events.append({"type": "fortify", "general": g.id, "castle": g.castle, "wall": c.wall})
+	return true
+
+
+## Council action: build a siege engine for g to take on its next march.
+func can_build_engine(g: General) -> bool:
+	return can_act(g) and not g.engine and bool(siege_cfg.get("engines", true))
+
+
+func build_engine(g: General) -> bool:
+	if not can_build_engine(g):
+		return false
+	g.engine = true
+	acted[g.id] = "engine"
+	_events.append({"type": "engine", "general": g.id})
+	return true
+
+
+## AI: should g spend its action on an engine? Yes when an enemy castle next
+## to where it stands has walls worth cutting (and g is not the king).
+func _ai_wants_engine(g: General) -> bool:
+	if g.king or g.engine or not can_build_engine(g):
+		return false
+	for n in adj[g.castle]:
+		var c: Dictionary = castles[n]
+		if c.owner != g.side and c.owner != "" and int(c.wall) >= int(siege_cfg.get("ai_engine_wall", 2)):
+			return true
+	return false
+
+
+## AI: raise this castle's wall? When it borders an enemy castle and is not maxed.
+func _ai_wants_wall(g: General) -> bool:
+	if not can_fortify(g):
+		return false
+	for n in adj[g.castle]:
+		if castles[n].owner == other_side(g.side):
+			return true
+	return false
 
 
 # --- AI -------------------------------------------------------------------------
@@ -699,6 +896,8 @@ func _ai_think(side: String) -> void:
 			var defence := 0.0
 			for e in generals_at(c.id, other_side(side)):
 				defence += e.troops + 5.0
+			# Walls make the defenders count for more (less if g brings an engine).
+			defence /= wall_take(wall_against(c.id, other_side(side), g))
 			if defence > g.troops * odds:
 				continue
 			var score := path_length(g.pos, p) + defence * 2.0

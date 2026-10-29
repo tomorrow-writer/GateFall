@@ -10,10 +10,11 @@ const MAX_STEPS := 20000
 
 
 ## troops: side id -> troop count for this battle ({"S": 30, "K": 12}).
+## mods: extra BattleSim overrides per side id (castle walls: WorldSim.battle_mods).
 ## Returns {winner: side id | "draw", left: {side id: troops left},
 ## fell: {side id: true if its general fell (not pulled out)}, time}.
-static func resolve(cfg: Dictionary, troops: Dictionary, seed_value: int) -> Dictionary:
-	var sim := BattleSim.new(cfg, overrides(cfg, troops, ""), BattleRng.new(seed_value))
+static func resolve(cfg: Dictionary, troops: Dictionary, seed_value: int, mods: Dictionary = {}) -> Dictionary:
+	var sim := BattleSim.new(cfg, overrides(cfg, troops, "", mods), BattleRng.new(seed_value))
 	sim.record_events = false
 	var dt := 1.0 / float(cfg.sim.steps_per_second)
 	var n := 0
@@ -42,11 +43,11 @@ static func fell_of(cfg: Dictionary, sim) -> Dictionary:
 
 
 ## BattleSim overrides for a map battle: each side's troop count; every side
-## except `player_side` is commanded by the AI.
-static func overrides(cfg: Dictionary, troops: Dictionary, player_side: String) -> Dictionary:
+## except `player_side` is commanded by the AI. mods: more overrides per side.
+static func overrides(cfg: Dictionary, troops: Dictionary, player_side: String, mods: Dictionary = {}) -> Dictionary:
 	var ov := {}
 	for sd in cfg.sides:
-		var o := {}
+		var o: Dictionary = mods.get(sd.id, {}).duplicate()
 		if sd.id != player_side:
 			o["ai"] = true
 		if troops.has(sd.id):

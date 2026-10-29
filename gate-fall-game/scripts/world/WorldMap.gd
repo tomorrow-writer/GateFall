@@ -19,6 +19,8 @@
 ## army walks as slimes, a human army as knights), with a ring in the side
 ## colour at the feet and a few troops walking behind when the army is big
 ## (world_map.json "map_sprites"). Generals standing in a castle are flags.
+## A castle's wall level shows as grey blocks under it; an army dragging a
+## siege engine has a little ram rolling behind it (world_map.json "siege").
 extends Node2D
 
 const WorldSim = preload("res://scripts/world/WorldSim.gd")
@@ -251,6 +253,16 @@ func _on_event(e: Dictionary) -> void:
 		"arrive":
 			if mine:
 				_log("%s ถึง %s" % [who, world.castles[e.castle].name])
+		"fortify":
+			if mine:
+				_log("%s สร้างกำแพง %s เป็น Lv%d" % [who, world.castles[e.castle].name, int(e.wall)])
+		"engine":
+			if mine:
+				_log("%s สร้างเครื่องตีกำแพง" % who)
+		"engine_spent":
+			_log("เครื่องตีกำแพงของ %s ใช้หมดแล้วที่ %s" % [who, world.castles[e.castle].name], mine)
+		"engine_lost":
+			_log("เครื่องตีกำแพงของ %s ถูกเผากลางทาง" % who, mine)
 		"council":
 			var inc: Dictionary = e.income
 			_log("ประชุมทัพครั้งที่ %d · คลังทหาร +%d" % [e.number, int(inc.get(Campaign.player_side, 0))])
@@ -276,8 +288,11 @@ func _check_battles() -> void:
 	var where: String = ("ที่ " + world.castles[b.castle].name) if b.castle != "" else "กลางทาง"
 	var who_attacks := "เราบุก" if mine == a else "ศัตรูบุก"
 	_popup_battle = int(b.id)
-	_popup = _make_popup("ศึก! (%s)" % who_attacks,
-			"%s  ทหาร %d\nvs\n%s  ทหาร %d\n%s" % [mine.name, int(mine.troops), theirs.name, int(theirs.troops), where],
+	var body := "%s  ทหาร %d\nvs\n%s  ทหาร %d\n%s" % [mine.name, int(mine.troops), theirs.name, int(theirs.troops), where]
+	var siege := _siege_text(b)
+	if siege != "":
+		body += "\n" + siege
+	_popup = _make_popup("ศึก! (%s)" % who_attacks, body,
 			[["สู้เอง [Enter]", _fight.bind(int(b.id))], ["ให้คำนวณผล [A]", _auto.bind(int(b.id))]])
 
 
@@ -285,6 +300,19 @@ func _battle_troops(b: Dictionary) -> Dictionary:
 	var a := world.get_general(b.a)
 	var d := world.get_general(b.d)
 	return {a.side: int(a.troops), d.side: int(d.troops)}
+
+
+## One line about the walls in a castle battle ("" = road, or no wall at all).
+func _siege_text(b: Dictionary) -> String:
+	var info := world.siege_info(b)
+	if not bool(info.castle) or int(info.wall) <= 0:
+		return ""
+	var pct := int(roundf((1.0 - float(info.take)) * 100.0))
+	if bool(info.engine):
+		if int(info.used) <= 0:
+			return "เครื่องตีกำแพงพังกำแพง Lv%d หมด · ไม่มีบัพ" % int(info.wall)
+		return "เครื่องตีกำแพง: กำแพง Lv%d→%d · ทหารฝ่ายรับรับดาเมจ -%d%%" % [int(info.wall), int(info.used), pct]
+	return "กำแพง Lv%d · ทหารฝ่ายรับรับดาเมจ -%d%%" % [int(info.wall), pct]
 
 
 func _fight(id: int) -> void:
@@ -297,8 +325,12 @@ func _fight(id: int) -> void:
 	_close_popup()
 	Campaign.map_selected = selected
 	Campaign.map_speed = speed_i
-	Campaign.fight({"id": id, "player_side": Campaign.player_side, "troops": _battle_troops(b),
-			"names": names, "where": world.castles[b.castle].name if b.castle != "" else "กลางทาง"})
+	var fight := {"id": id, "player_side": Campaign.player_side, "troops": _battle_troops(b),
+			"names": names, "where": world.castles[b.castle].name if b.castle != "" else "กลางทาง",
+			"mods": world.battle_mods(b), "siege_text": _siege_text(b)}
+	if b.castle != "":
+		fight["background"] = str(world.siege_cfg.get("castle_background", ""))
+	Campaign.fight(fight)
 
 
 func _auto(id: int) -> void:
@@ -306,7 +338,7 @@ func _auto(id: int) -> void:
 	if b.is_empty():
 		return
 	_close_popup()
-	var res := AutoBattle.resolve(_battle_cfg, _battle_troops(b), randi_range(1, 2147483646))
+	var res := AutoBattle.resolve(_battle_cfg, _battle_troops(b), randi_range(1, 2147483646), world.battle_mods(b))
 	var a := world.get_general(b.a)
 	var d := world.get_general(b.d)
 	world.resolve_battle(id, res.winner, res.left, res.fell)
@@ -418,8 +450,11 @@ func _show_council() -> void:
 		_council_label(grid, ("★" if g.king else "") + g.name, 7, TEXT if ok else DIM, false)
 		var where: String = world.castles[g.castle].name if ok else ("เดินทาง" if g.state == "moving" else
 				("กำลังรบ" if g.state == "battle" else "นอกปราสาท"))
+		if ok and int(world.castles[g.castle].wall) > 0:
+			where += " Lv%d" % int(world.castles[g.castle].wall)
 		_council_label(grid, where, 7, DIM, false)
-		_council_label(grid, "%d/%d" % [int(g.troops), cap], 7, TEXT if ok else DIM, false)
+		_council_label(grid, "%d/%d%s" % [int(g.troops), cap, " +ตี" if g.engine else ""], 7, TEXT if ok else DIM,
+				false)
 		_council_button(grid, "−%d" % step, _council_draft.bind(g.id, -step), ok and g.troops >= 1)
 		_council_button(grid, "+%d" % step, _council_draft.bind(g.id, step),
 				ok and g.troops < cap and int(world.reserve[side]) > 0)
@@ -458,8 +493,9 @@ func _show_council() -> void:
 	_popup = panel
 
 
-## Last column of a general's row: its one action this council (levy, or
-## persuade the aimed-at prisoner), or what it already did.
+## Last column of a general's row: its one action this council (levy, raise
+## the castle's wall, build a siege engine, or persuade the aimed-at
+## prisoner), or what it already did.
 func _council_action_cell(grid: GridContainer, g, target) -> void:
 	var cell := HBoxContainer.new()
 	cell.add_theme_constant_override("separation", 2)
@@ -470,10 +506,13 @@ func _council_action_cell(grid: GridContainer, g, target) -> void:
 	if world.acted.has(g.id):
 		var what := str(world.acted[g.id])
 		var done: String = {"levy": "เกณฑ์แล้ว", "persuade_ok": "ชวนสำเร็จ", "persuade_fail": "ชวนไม่สำเร็จ",
-				"joined": "เพิ่งเข้าร่วม"}.get(what, "สั่งแล้ว")
+				"joined": "เพิ่งเข้าร่วม", "fortify": "สร้างกำแพงแล้ว", "engine": "สร้างเครื่องตีแล้ว"}.get(what, "สั่งแล้ว")
 		_council_label(cell, done, 7, TRIM_HI if what == "persuade_ok" else DIM, false)
 		return
-	_council_button(cell, "เกณฑ์ +%d" % world.levy_amount(), _council_levy.bind(g.id), world.levy_amount() > 0)
+	_council_button(cell, "เกณฑ์+%d" % world.levy_amount(), _council_levy.bind(g.id), world.levy_amount() > 0)
+	_council_button(cell, "กำแพง", _council_fortify.bind(g.id), world.can_fortify(g))
+	if bool(world.siege_cfg.get("engines", true)):
+		_council_button(cell, "เครื่องตี", _council_engine.bind(g.id), world.can_build_engine(g))
 	if target != null:
 		var c: float = world.recruit_chance(target, g)
 		_council_button(cell, "ชวน %d%%" % int(roundf(c * 100.0)), _council_persuade.bind(g.id, target.id), c > 0.0)
@@ -523,6 +562,22 @@ func _council_levy(gid: String) -> void:
 	if n > 0:
 		_log("%s เกณฑ์ทหาร +%d เข้าคลัง" % [g.name, n])
 	world._take_events()
+	_show_council()
+
+
+## Action: raise the wall of the castle the general stands in by one level.
+func _council_fortify(gid: String) -> void:
+	world.fortify(world.get_general(gid))
+	for e in world._take_events():
+		_on_event(e)
+	_show_council()
+
+
+## Action: build a siege engine the general takes on its next march.
+func _council_engine(gid: String) -> void:
+	world.build_engine(world.get_general(gid))
+	for e in world._take_events():
+		_on_event(e)
 	_show_council()
 
 
@@ -715,11 +770,12 @@ func _draw_castles(font: Font) -> void:
 		if b.castle != "":
 			fighting[b.castle] = true
 	for c in world.castles.values():
-		_draw_castle(font, c.pos, c.owner, c.capital, c.name, c.id == hover_castle, fighting.has(c.id))
+		_draw_castle(font, c.pos, c.owner, c.capital, c.name, c.id == hover_castle, fighting.has(c.id),
+				int(c.wall))
 
 
 func _draw_castle(font: Font, p: Vector2, owner: String, capital: bool, name: String, hover: bool,
-		fighting: bool) -> void:
+		fighting: bool, wall := 0) -> void:
 	var col := _side_col(owner)
 	var dark := _side_col(owner, true)
 	var w := 11.0 if capital else 8.0
@@ -735,6 +791,11 @@ func _draw_castle(font: Font, p: Vector2, owner: String, capital: bool, name: St
 	draw_rect(Rect2(p.x - 1, base.end.y - 3, 2, 3), dark)  # gate
 	if capital:
 		draw_rect(Rect2(p.x - 1, base.position.y - 4, 2, 3), TRIM_HI)
+	# Wall level: little stone blocks stacked up the right side of the castle.
+	for i in wall:
+		var blk := Rect2(base.end.x + 1.5, base.end.y - 2.0 - i * 3.0, 2, 2)
+		draw_rect(blk.grow(0.5), Color(0, 0, 0, 0.7))
+		draw_rect(blk, Color("b8b0a2"))
 	if hover:
 		draw_arc(p + Vector2(0, -1), 9.0, 0, TAU, 20, Color(1, 1, 1, 0.8), 1.0)
 	if fighting and fmod(_clock, 0.5) < 0.3:
@@ -902,7 +963,24 @@ func _draw_army(g, sel: bool) -> void:
 		var p: Vector2 = g.pos + back * float(fl.get("gap", 5.0)) * i + side_off * (1.5 if i % 2 == 1 else -1.5)
 		_draw_unit(look.sp, anim, t + i * 0.21, p.round(), look.scale * float(fl.get("scale", 0.8)), face,
 				Color(0.85, 0.85, 0.85))
+	if g.engine:
+		_draw_engine(g.pos + back * float(fl.get("gap", 5.0)) * (n + 1), face, anim == "walk", t)
 	_draw_unit(look.sp, anim, t, g.pos.round(), look.scale, face, Color.WHITE)
+
+
+## A siege engine (covered ram on two wheels) rolling behind an army.
+func _draw_engine(p: Vector2, face: int, rolling: bool, t: float) -> void:
+	var c := p.round() + Vector2(0, -2)
+	var bob := 0.0 if not rolling or fmod(t, 0.5) < 0.25 else -0.5
+	var body := Rect2(c.x - 3, c.y - 2 + bob, 6, 3)
+	draw_rect(body.grow(0.5), Color(0, 0, 0, 0.6))
+	draw_rect(body, Color("7a5434"))
+	draw_colored_polygon(PackedVector2Array([Vector2(c.x - 3.5, c.y - 2 + bob), Vector2(c.x + 3.5, c.y - 2 + bob),
+			Vector2(c.x, c.y - 5 + bob)]), Color("5a3e26"))
+	# ram head pokes out the front
+	draw_rect(Rect2(c.x + (3 if face > 0 else -5), c.y - 1 + bob, 2, 1), Color("b8b0a2"))
+	for wx in [c.x - 2, c.x + 2]:
+		draw_circle(Vector2(wx, c.y + 1.5), 1.2, Color("2a2018"))
 
 
 ## One sprite frame standing on `foot` (scaled; face -1 = flipped to the left).
@@ -975,7 +1053,7 @@ func _chip_text(g) -> String:
 			mark = " ถอย" if g.retreating else " เดิน"
 		"battle":
 			mark = " รบ"
-	return "%s%s %d%s" % ["★" if g.king else "", g.name, int(g.troops), mark]
+	return "%s%s %d%s%s" % ["★" if g.king else "", g.name, int(g.troops), " +ตี" if g.engine else "", mark]
 
 
 func _draw_bottom(font: Font) -> void:
@@ -1027,6 +1105,9 @@ func _draw_bottom(font: Font) -> void:
 func _draw_castle_tip(font: Font, cid: String) -> void:
 	var c: Dictionary = world.castles[cid]
 	var lines := ["%s (%s)" % [c.name, side_cfg[c.owner].label]]
+	if int(c.wall) > 0:
+		lines.append("กำแพง Lv%d (ทหารรับดาเมจ -%d%%)" % [int(c.wall),
+				int(roundf((1.0 - world.wall_take(int(c.wall))) * 100.0))])
 	for e in world.generals_at(cid):
 		lines.append("%s ทหาร %d" % [e.name, int(e.troops)])
 	var w := 0.0

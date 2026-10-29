@@ -108,6 +108,10 @@ func _ready() -> void:
 	_campaign = get_node_or_null("/root/Campaign")
 	if _campaign != null and _campaign.in_battle():
 		player_side = str(_campaign.battle.player_side)
+		# Castle battles fight on their own ground (walls behind the field).
+		var bg := str(_campaign.battle.get("background", ""))
+		if bg != "" and ResourceLoader.exists(bg):
+			cfg.field["background"] = bg
 	else:
 		_campaign = null
 	_dt = 1.0 / float(cfg.sim.steps_per_second)
@@ -206,6 +210,7 @@ func _ready() -> void:
 	hud.player_side = player_side
 	if _campaign != null:
 		hud.names = _campaign.battle.get("names", {})
+		hud.siege_text = str(_campaign.battle.get("siege_text", ""))
 	_back_to_setup()
 
 
@@ -370,6 +375,11 @@ func _new_sim() -> void:
 		var troops: Dictionary = _campaign.battle.troops
 		for sd in cfg.sides:
 			overrides[sd.id]["units"] = [[sd.unit, int(troops.get(sd.id, sd.count))]]
+		# Castle walls (WorldSim.battle_mods): {side: {"wall_take": x}}.
+		var mods: Dictionary = _campaign.battle.get("mods", {})
+		for id in mods:
+			if overrides.has(id):
+				overrides[id].merge(mods[id], true)
 	sim = BattleSim.new(cfg, overrides, BattleRng.new(_seed))
 	view.bind(sim)
 	hud.sim = sim

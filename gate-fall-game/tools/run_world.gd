@@ -29,6 +29,9 @@ func _init() -> void:
 	var fights := 0
 	var taken := 0
 	var joined := 0
+	var walls := 0  # wall levels raised
+	var engines := 0  # engines built
+	var sieges := 0  # castle battles where walls counted (after engines)
 	var t0 := Time.get_ticks_msec()
 	for r in runs:
 		var seed_value := 1000 + r * 31
@@ -37,17 +40,22 @@ func _init() -> void:
 			for e in w.step(STEP):
 				taken += 1 if e.type == "captured" else 0
 				joined += 1 if e.type == "recruited" else 0
+				walls += 1 if e.type == "fortify" else 0
+				engines += 1 if e.type == "engine" else 0
 				if log_first and r == 0:
 					print(_line(w, e))
 			for b in w.battles.duplicate():
 				var a := w.get_general(b.a)
 				var d := w.get_general(b.d)
-				var res := AutoBattle.resolve(cfg, {a.side: a.troops, d.side: d.troops}, seed_value)
+				var res := AutoBattle.resolve(cfg, {a.side: a.troops, d.side: d.troops}, seed_value, w.battle_mods(b))
+				var si := w.siege_info(b)
+				sieges += 1 if int(si.used) > 0 else 0
 				seed_value += 1
 				fights += 1
 				if log_first and r == 0:
-					print("  day %.1f battle %s(%d) vs %s(%d) at %s -> %s left %s" % [w.day, a.name, a.troops,
+					print("  day %.1f battle %s(%d) vs %s(%d) at %s%s -> %s left %s" % [w.day, a.name, a.troops,
 							d.name, d.troops, w.castles[b.castle].name if b.castle != "" else "road",
+							" wall %d%s" % [si.wall, " engine->%d" % si.used if si.engine else ""] if si.castle else "",
 							res.winner, res.left])
 				w.resolve_battle(int(b.id), res.winner, res.left, res.fell)
 				for e in w._take_events():
@@ -62,6 +70,8 @@ func _init() -> void:
 	print("S %d · K %d · none %d · avg %.0f days · %.1f battles/war · %.1fs" % [wins.S, wins.K, wins[""],
 			days / runs, float(fights) / runs, (Time.get_ticks_msec() - t0) / 1000.0])
 	print("prisoners taken %.1f/war · joined %.1f/war" % [float(taken) / runs, float(joined) / runs])
+	print("walls raised %.1f/war · engines built %.1f/war · battles behind walls %.1f/war" % [float(walls) / runs,
+			float(engines) / runs, float(sieges) / runs])
 	quit()
 
 
@@ -88,6 +98,14 @@ func _line(w: WorldSim, e: Dictionary) -> String:
 		"council":
 			return "day %.1f COUNCIL #%d income %s reserve %s troops S%d K%d" % [w.day, e.number, e.income, w.reserve,
 					w.troops_of("S"), w.troops_of("K")]
+		"fortify":
+			return "day %.1f   %s raises the wall of %s to %d" % [w.day, who, at, e.wall]
+		"engine":
+			return "day %.1f   %s builds a siege engine" % [w.day, who]
+		"engine_spent":
+			return "day %.1f   %s's engine is spent at %s" % [w.day, who, at]
+		"engine_lost":
+			return "day %.1f   %s's engine is burnt on the road" % [w.day, who]
 		"over":
 			return "day %.1f WAR OVER: %s" % [w.day, e.winner]
 	return "day %.1f %s %s %s" % [w.day, e.type, who, at]

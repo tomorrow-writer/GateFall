@@ -133,6 +133,7 @@ class Army:
 	var slot_casts: Array = []  # casts per slot this battle
 	var auto_slot: int = -1  # slot auto_cast fires (-1 = the largest)
 	var guard: Dictionary = {}  # defence special running {take, left, total, special}; empty = none
+	var wall_take: float = 1.0  # castle walls (world map): troops' damage taken x; the general is not covered
 	var auto_cast: bool
 	var mp: float
 	var mp_max: float
@@ -249,7 +250,9 @@ static func load_config(path: String = "res://data/battle_config.json") -> Dicti
 
 
 ## overrides: per side id, any of {"formation", "order", "auto_cast",
-## "auto_slot", "ai", "dodge", "gcharge"}.
+## "auto_slot", "ai", "dodge", "gcharge", "units", "wall_take"}.
+##   wall_take: troops (not the general) take this x damage, hits and specials
+##              alike: castle walls in a world-map battle (default 1).
 ##   auto_cast: fire special auto_slot (default: the largest) as soon as it is
 ##              ready (best lane).
 ##   ai: BattleAI decides when and where to cast (enemy side in play and in run_sims).
@@ -286,6 +289,7 @@ func _init(config: Dictionary, overrides: Dictionary = {}, shared_rng: BattleRng
 		s.slot_casts.fill(0)
 		s.auto_slot = int(ov.get("auto_slot", s.specials.size() - 1))
 		s.auto_cast = bool(ov.get("auto_cast", false))
+		s.wall_take = float(ov.get("wall_take", 1.0))
 		s.mp = float(sd.mp_start)
 		s.mp_max = float(sd.mp_max)
 		s.wave = {}
@@ -591,6 +595,9 @@ func step(dt: float) -> Array:
 					dmg *= v.front_take if v.front_take > 0.0 else front_take
 					if not v.side.pending.is_empty():
 						dmg *= channel_take
+				# Behind castle walls (world-map siege): troops only, not the general.
+				if v.side.wall_take != 1.0 and not v.is_general:
+					dmg *= v.side.wall_take
 				if not u.ranged.is_empty() and d > float(u.ranged.get("close_range", 0)):
 					_fire(u, v, dmg, d)
 				else:
@@ -925,6 +932,8 @@ func special_damage(s: Army, u: Unit, travelled: float, sp: Dictionary = {}) -> 
 			dmg *= u.side.guard_take
 	if not u.side.guard.is_empty():
 		dmg *= float(u.side.guard.take)
+	if u.side.wall_take != 1.0 and not u.is_general:
+		dmg *= u.side.wall_take
 	return dmg
 
 
