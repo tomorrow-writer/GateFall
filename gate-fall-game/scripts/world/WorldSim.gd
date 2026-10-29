@@ -22,6 +22,15 @@
 ##     their own castles take troops from it (or hand them back). AI sides
 ##     settle theirs at once; a human side keeps the map stopped until
 ##     end_council() (`council` lists the sides still deciding).
+##   - council actions (like DF): each general standing in its own castle may do
+##     ONE thing per council: levy (troops into the reserve) or persuade a
+##     prisoner to join. Handing out troops from the reserve is free.
+##   - prisoners: a beaten general whose general fell in battle (not one that
+##     pulled out) is taken with chance prisoners.capture_if_fell; no way home =
+##     always taken. The captor keeps it (`held_by`) and may persuade it at each
+##     council; the chance grows each council it stays captive and falls with
+##     its loyalty. Kings never join. A general who joins keeps its own look
+##     (`origin`) but fights for its new side, starting with no troops.
 extends RefCounted
 
 
@@ -37,6 +46,10 @@ class General:
 	var path: Array = []  # castles still to reach, the next one first
 	var state := "idle"  # idle | moving | battle | captured
 	var retreating := false  # walking home after a lost battle (nobody stops it)
+	var origin := ""  # side it started on (its troop look on the map stays this)
+	var loyalty := 60  # 0-100: how hard it is to persuade once captured
+	var held_by := ""  # captured: the side holding it
+	var captive_councils := 0  # councils held since it was captured
 
 	func target() -> String:
 		return str(path[-1]) if not path.is_empty() else castle
@@ -56,6 +69,11 @@ var reserve := {"S": 0, "K": 0}  # troops waiting to be handed out, per side
 var council: Array = []  # human sides still in the council (the map waits for them)
 var councils_held := 0
 var next_council := INF
+var prisoner_cfg: Dictionary
+var acted := {}  # general id -> what it did this council ("levy", "persuade_ok", "persuade_fail", "joined")
+var tried := {}  # prisoner id -> true once someone tried to persuade it this council
+var rng := RandomNumberGenerator.new()
+var _council_open := false  # actions only count while a council is on
 
 var _next_battle := 1
 var _events: Array = []
@@ -71,8 +89,13 @@ static func load_map(path: String) -> Dictionary:
 	return parsed if parsed is Dictionary else {}
 
 
-func _init(map_data: Dictionary, ai: Array = []) -> void:
+func _init(map_data: Dictionary, ai: Array = [], seed_value: int = 0) -> void:
+	if seed_value != 0:
+		rng.seed = seed_value
+	else:
+		rng.randomize()
 	data = map_data
+	prisoner_cfg = data.get("prisoners", {})
 	rules = data.rules
 	ai_sides = ai
 	for c in data.castles:
@@ -88,6 +111,8 @@ func _init(map_data: Dictionary, ai: Array = []) -> void:
 		g.name = gd.name
 		g.side = gd.side
 		g.king = bool(gd.get("king", false))
+		g.origin = g.side
+		g.loyalty = int(gd.get("loyalty", 100 if g.king else int(prisoner_cfg.get("default_loyalty", 60))))
 		g.troops = float(gd.get("troops", rules.max_troops))
 		g.castle = gd.castle
 		g.from = gd.castle
@@ -361,8 +386,10 @@ func _regen(days: float) -> void:
 # --- battles --------------------------------------------------------------------
 
 ## Settle a queued battle. winner = side id or "draw"; left = troops left per
-## side id ({"S": 12, "K": 0}).
-func resolve_battle(id: int, winner_side: String, left: Dictionary) -> void:
+## side id ({"S": 12, "K": 0}); fell = side id -> true if that side's general
+## fell (on the field or in the duel) rather than pulling out. A loser whose
+## general fell may be taken prisoner (prisoners.capture_if_fell).
+func resolve_battle(id: int, winner_side: String, left: Dictionary, fell: Dictionary = {}) -> void:
 	var b := get_battle(id)
 	if b.is_empty():
 		return
@@ -378,7 +405,11 @@ func resolve_battle(id: int, winner_side: String, left: Dictionary) -> void:
 		lost = d
 	_events.append({"type": "battle_end", "battle": id, "winner": winner_side, "won": won.id, "lost": lost.id,
 			"castle": b.castle})
-	_send_home(lost, b.castle)
+	if winner_side != "draw" and bool(fell.get(lost.side, false)) \
+			and rng.randf() < float(prisoner_cfg.get("capture_if_fell", 0.0)):
+		_take_prisoner(lost, won.side)
+	else:
+		_send_home(lost, b.castle)
 	if b.castle != "":
 		if won == a:
 			var more := generals_at(b.castle, other_side(a.side))
@@ -413,9 +444,7 @@ func _send_home(g: General, avoid: String = "") -> void:
 				best = p
 	g.castle = ""
 	if best.is_empty():
-		g.state = "captured"
-		g.path.clear()
-		_events.append({"type": "captured", "general": g.id})
+		_take_prisoner(g, other_side(g.side))
 		return
 	g.from = best[0]
 	g.path = best.slice(1) if g.pos.distance_to(castles[best[0]].pos) < 0.5 else best
@@ -431,6 +460,17 @@ func _send_home(g: General, avoid: String = "") -> void:
 		return
 	g.state = "moving"
 	g.retreating = true
+
+
+func _take_prisoner(g: General, by: String) -> void:
+	g.state = "captured"
+	g.held_by = by
+	g.captive_councils = 0
+	g.castle = ""
+	g.troops = 0.0  # its army is gone
+	g.path.clear()
+	g.retreating = false
+	_events.append({"type": "captured", "general": g.id, "by": by})
 
 
 func _check_wipeout() -> void:
@@ -483,17 +523,24 @@ func draft(g: General, n: int) -> int:
 
 func _start_council() -> void:
 	councils_held += 1
+	_council_open = true
+	acted.clear()
+	tried.clear()
+	for g in generals:
+		if g.state == "captured":
+			g.captive_councils += 1
 	var income := {}
 	for side in ["S", "K"]:
 		if generals_of(side).is_empty():
 			continue
 		income[side] = income_of(side)
 		reserve[side] = int(reserve[side]) + income[side]
+	_events.append({"type": "council", "number": councils_held, "income": income})
+	for side in income:
 		if side in ai_sides:
 			auto_council(side)
 		else:
 			council.append(side)
-	_events.append({"type": "council", "number": councils_held, "income": income})
 	if council.is_empty():
 		_next_council()
 
@@ -508,12 +555,20 @@ func end_council(side: String) -> void:
 
 
 func _next_council() -> void:
+	_council_open = false
 	next_council = day + float(council_cfg.get("every_days", 30))
 	_events.append({"type": "council_end", "number": councils_held})
 
 
-## Basic AI council: fill up the weakest generals standing at home first.
+## AI council: one action per general (persuade prisoners, the rest levy),
+## then hand out the reserve.
 func auto_council(side: String) -> void:
+	auto_actions(side)
+	auto_draft(side)
+
+
+## Hand out the reserve: fill up the weakest generals standing at home first.
+func auto_draft(side: String) -> void:
 	var home: Array[General] = []
 	for g in generals_of(side):
 		if can_draft(g):
@@ -523,6 +578,100 @@ func auto_council(side: String) -> void:
 		if int(reserve[side]) <= 0:
 			break
 		draft(g, int(rules.max_troops))
+
+
+# --- council actions (one per general per council) --------------------------------
+
+## A general can act if it stands in its own castle, the council is on and it
+## has not acted yet this council.
+func can_act(g: General) -> bool:
+	return _council_open and can_draft(g) and not acted.has(g.id)
+
+
+func prisoners_of(side: String) -> Array[General]:
+	var out: Array[General] = []
+	for g in generals:
+		if g.state == "captured" and g.held_by == side:
+			out.append(g)
+	return out
+
+
+## Troops one levy adds to the side's reserve.
+func levy_amount() -> int:
+	return int(council_cfg.get("levy", 0))
+
+
+## Action: raise troops from the castle's people into the side's reserve.
+func levy(g: General) -> int:
+	if not can_act(g) or levy_amount() <= 0:
+		return 0
+	var n := levy_amount()
+	reserve[g.side] = int(reserve[g.side]) + n
+	acted[g.id] = "levy"
+	_events.append({"type": "levy", "general": g.id, "amount": n})
+	return n
+
+
+## Chance (0-1) that `by` talks prisoner `p` into joining this council. 0 = it
+## will not (a king, not ours to ask, or already asked this council).
+func recruit_chance(p: General, by: General) -> float:
+	if p == null or by == null or p.state != "captured" or p.held_by != by.side or p.king \
+			or tried.has(p.id):
+		return 0.0
+	var c := float(prisoner_cfg.get("base", 0.2)) \
+			+ float(prisoner_cfg.get("per_council", 0.15)) * p.captive_councils \
+			- (p.loyalty - 50) * float(prisoner_cfg.get("loyalty_weight", 0.01))
+	if by.king:
+		c += float(prisoner_cfg.get("king_bonus", 0.0))
+	return clampf(c, float(prisoner_cfg.get("min", 0.05)), float(prisoner_cfg.get("max", 0.9)))
+
+
+## Action: `by` tries to talk prisoner `p` into joining. One try per prisoner
+## per council. Returns true if it joins (it stands in by's castle, no troops).
+func persuade(by: General, p: General) -> bool:
+	if not can_act(by):
+		return false
+	var chance := recruit_chance(p, by)
+	if chance <= 0.0:
+		return false
+	tried[p.id] = true
+	if rng.randf() >= chance:
+		acted[by.id] = "persuade_fail"
+		_events.append({"type": "refused", "general": p.id, "by": by.id})
+		return false
+	acted[by.id] = "persuade_ok"
+	p.side = by.side
+	p.held_by = ""
+	p.captive_councils = 0
+	p.state = "idle"
+	p.castle = by.castle
+	p.from = by.castle
+	p.pos = castles[by.castle].pos
+	p.troops = 0.0
+	p.loyalty = int(prisoner_cfg.get("joined_loyalty", 50))
+	acted[p.id] = "joined"  # just arrived: no action this council (it can still take troops)
+	_events.append({"type": "recruited", "general": p.id, "by": by.id, "side": by.side})
+	return true
+
+
+## AI actions: the best persuader (highest chance) tries each prisoner, every
+## general left over levies.
+func auto_actions(side: String) -> void:
+	for p in prisoners_of(side):
+		var best: General = null
+		var best_c := 0.0
+		for g in generals_of(side):
+			if not can_act(g):
+				continue
+			var c := recruit_chance(p, g)
+			if c > best_c:
+				best_c = c
+				best = g
+		if best != null:
+			persuade(best, p)
+	for g in generals_of(side):
+		if can_act(g):
+			levy(g)
 
 
 # --- AI -------------------------------------------------------------------------
