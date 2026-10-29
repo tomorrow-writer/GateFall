@@ -15,6 +15,12 @@
     "ai_min_troops": 20,
     "ai_odds": 1.1
   },
+  "map_sprites": {
+    "_note": "Marching armies are drawn with the battle sprite of their troops (battle_config.json sprites). Per side: sprite id, scale on the map, followers = extra troops walking behind (one per `per` troops, at most `max`). A general can set its own \"unit\" to override. The ring at the feet is the side colour (a captured general who joins keeps its own look but the colour tells the side).",
+    "S": {"sprite": "slime_big", "scale": 0.5},
+    "K": {"sprite": "knight", "scale": 0.5},
+    "followers": {"per": 10, "max": 2, "scale": 0.8, "gap": 5.0}
+  },
   "sides": {
     "S": {"label": "สไลม์", "color": "8fe07a", "dark": "2f6b34"},
     "K": {"label": "มนุษย์", "color": "7fb2ff", "dark": "2c4a86"},

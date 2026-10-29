@@ -14,6 +14,11 @@
 ##   Space = pause / go on · 1 / 2 / 3 = speed ×1 / ×2 / ×4
 ##   Tab = next of your generals · Esc = deselect
 ##   when a battle starts: Enter = fight it yourself · A = auto-resolve
+##
+## Marching armies are drawn with the battle sprite of their troops (a slime
+## army walks as slimes, a human army as knights), with a ring in the side
+## colour at the feet and a few troops walking behind when the army is big
+## (world_map.json "map_sprites"). Generals standing in a castle are flags.
 extends Node2D
 
 const WorldSim = preload("res://scripts/world/WorldSim.gd")
@@ -53,6 +58,8 @@ var _battle_cfg: Dictionary
 var _ui: CanvasLayer
 var _popup: PanelContainer = null
 var _popup_battle := -1
+var _map_sprites := {}  # sprite id -> {anims: {name: {tex, frames, fps}}, w, h, foot, height}
+var _facing := {}  # general id -> -1 (left) / 1 (right): kept while it stands to fight
 
 
 func _ready() -> void:
@@ -60,6 +67,7 @@ func _ready() -> void:
 	_ui.layer = 5
 	add_child(_ui)
 	_battle_cfg = BattleSim.load_config("res://data/battle_config.json")
+	_load_map_sprites()
 	if Campaign.world == null:
 		data = WorldSim.load_map(Campaign.MAP_DATA)
 		side_cfg = data.sides
@@ -533,7 +541,8 @@ func _tokens() -> Array:
 				at[g.castle] = []
 			at[g.castle].append(g)
 		elif g.state in ["moving", "battle"]:
-			out.append({"id": g.id, "rect": Rect2(g.pos - Vector2(3, 7), Vector2(6, 6)), "moving": true})
+			var h := _unit_height(g)
+			out.append({"id": g.id, "rect": Rect2(g.pos - Vector2(4, h), Vector2(8, h + 1)), "moving": true})
 	for cid in at:
 		var list: Array = at[cid]
 		var p: Vector2 = world.castles[cid].pos
@@ -544,24 +553,30 @@ func _tokens() -> Array:
 
 
 func _draw_generals(font: Font) -> void:
-	for t in _tokens():
+	var tokens := _tokens()
+	tokens.sort_custom(func(x, y): return x.rect.end.y < y.rect.end.y)  # lower on screen = in front
+	for t in tokens:
 		var g := world.get_general(t.id)
 		var r: Rect2 = t.rect
 		var col := _side_col(g.side)
 		var sel: bool = g.id == selected
 		if t.moving:
-			var c := r.get_center()
-			var dia := PackedVector2Array([c + Vector2(0, -4), c + Vector2(4, 0), c + Vector2(0, 4), c + Vector2(-4, 0)])
-			draw_colored_polygon(dia, Color(0, 0, 0, 0.6))
-			var inner := PackedVector2Array([c + Vector2(0, -3), c + Vector2(3, 0), c + Vector2(0, 3), c + Vector2(-3, 0)])
-			draw_colored_polygon(inner, col)
-			draw_line(c + Vector2(0, 3), g.pos, Color(0, 0, 0, 0.5), 1.0)
+			_draw_army(g, sel)
+			var top := Vector2(g.pos.x, r.position.y)
+			if g.king:
+				_draw_crown(top + Vector2(0, -1))
 			if g.state == "battle":
+				var c := top + Vector2(0, -5)
 				var a := ALERT if fmod(_clock, 0.4) < 0.25 else TEXT
-				draw_line(c + Vector2(-4, -4), c + Vector2(4, 4), a, 1.0)
-				draw_line(c + Vector2(4, -4), c + Vector2(-4, 4), a, 1.0)
+				draw_line(c + Vector2(-3, -3), c + Vector2(3, 3), a, 1.0)
+				draw_line(c + Vector2(3, -3), c + Vector2(-3, 3), a, 1.0)
 			if g.retreating:
-				_text(font, "ถอย", c + Vector2(0, -6), 6, DIM, true)
+				_text(font, "ถอย", top + Vector2(0, -3), 6, DIM, true)
+			if g.id == hover_chip:
+				_draw_foot_ring(g.pos, 6.0, TRIM_HI)
+			if g.troops < 0.5:
+				draw_line(r.position, r.end, ALERT, 1.0)
+			continue
 		else:
 			# flag on a pole
 			draw_line(Vector2(r.position.x, r.position.y), Vector2(r.position.x, r.end.y + 3), Color(0.2, 0.15, 0.1), 1.0)
@@ -575,6 +590,136 @@ func _draw_generals(font: Font) -> void:
 			draw_rect(r.grow(1.5), Color.WHITE, false, 1.0)
 		if g.troops < 0.5:
 			draw_line(r.position, r.end, ALERT, 1.0)
+
+
+# --- marching armies (sprites) ----------------------------------------------------
+
+## Load the battle sprite strips the map uses (walk + idle only).
+func _load_map_sprites() -> void:
+	_map_sprites.clear()
+	var defs: Dictionary = _battle_cfg.get("sprites", {})
+	var map := WorldSim.load_map(Campaign.MAP_DATA)
+	var ms: Dictionary = map.get("map_sprites", {})
+	var want := {}
+	for k in ms:
+		if ms[k] is Dictionary and ms[k].has("sprite"):
+			want[str(ms[k].sprite)] = true
+	for gd in map.get("generals", []):
+		if gd.has("unit"):
+			want[str(gd.unit)] = true
+	for id in want:
+		if not defs.has(id):
+			continue
+		var d: Dictionary = defs[id]
+		var fw := int(d.frame[0])
+		var fh := int(d.frame[1])
+		var anims := {}
+		for a in ["walk", "idle"]:
+			var path := "%s/%s.png" % [d.dir, a]
+			if not ResourceLoader.exists(path):
+				continue
+			var tex: Texture2D = load(path)
+			var ad: Dictionary = d.get("anims", {}).get(a, {})
+			anims[a] = {"tex": tex, "frames": int(ad.get("frames", maxi(1, tex.get_width() / fw))),
+					"fps": float(ad.get("fps", 6))}
+		if anims.is_empty():
+			continue
+		var foot: Array = d.get("foot", [fw / 2, fh - 1])
+		_map_sprites[id] = {"anims": anims, "w": fw, "h": fh, "foot": Vector2(foot[0], foot[1]),
+				"height": float(d.get("height", fh))}
+
+
+## Sprite set + scale a general's army is drawn with ({} = no sprite: diamond).
+## The side picks the troop look; a general may set its own "unit".
+func _army_look(g) -> Dictionary:
+	var ms: Dictionary = data.get("map_sprites", {})
+	var side_look: Dictionary = ms.get(g.side, {})
+	var id := str(side_look.get("sprite", ""))
+	for gd in data.generals:
+		if gd.id == g.id and gd.has("unit"):
+			id = str(gd.unit)
+	if not _map_sprites.has(id):
+		return {}
+	return {"sp": _map_sprites[id], "scale": float(side_look.get("scale", 0.5))}
+
+
+func _unit_height(g) -> float:
+	var look := _army_look(g)
+	if look.is_empty():
+		return 8.0
+	return ceilf(look.sp.height * look.scale)
+
+
+## Which way a marching army heads: towards the next castle. The facing is kept
+## while it stops to fight, so both sides of a road battle face each other.
+func _army_dir(g) -> Vector2:
+	if g.state == "moving" and not g.path.is_empty():
+		var to: Vector2 = world.castles[g.path[0]].pos
+		if to.distance_to(g.pos) > 0.1:
+			var d: Vector2 = (to - g.pos).normalized()
+			if absf(d.x) > 0.05:
+				_facing[g.id] = 1 if d.x > 0 else -1
+			return d
+	return Vector2(_facing.get(g.id, 1), 0)
+
+
+func _draw_army(g, sel: bool) -> void:
+	var look := _army_look(g)
+	var col := _side_col(g.side)
+	var dir := _army_dir(g)
+	var face: int = _facing.get(g.id, 1 if dir.x >= 0 else -1)
+	_draw_foot_ring(g.pos, 5.5, col, true)
+	if sel and fmod(_clock, 0.8) < 0.55:
+		_draw_foot_ring(g.pos, 6.5, Color.WHITE)
+	if look.is_empty():
+		var c: Vector2 = g.pos + Vector2(0, -4)
+		draw_colored_polygon(PackedVector2Array([c + Vector2(0, -4), c + Vector2(4, 0), c + Vector2(0, 4),
+				c + Vector2(-4, 0)]), Color(0, 0, 0, 0.6))
+		draw_colored_polygon(PackedVector2Array([c + Vector2(0, -3), c + Vector2(3, 0), c + Vector2(0, 3),
+				c + Vector2(-3, 0)]), col)
+		return
+	var anim := "walk" if g.state == "moving" else "idle"
+	var t := _clock + float(absi(hash(g.id)) % 97) * 0.13  # out of step with the others
+	# Followers: a few troops walking behind the leader (more troops = more).
+	var fl: Dictionary = data.get("map_sprites", {}).get("followers", {})
+	var n := mini(int(fl.get("max", 0)), int(floorf(g.troops / maxf(1.0, float(fl.get("per", 10))))))
+	var back := -dir
+	var side_off := Vector2(-back.y, back.x)
+	for i in range(n, 0, -1):
+		var p: Vector2 = g.pos + back * float(fl.get("gap", 5.0)) * i + side_off * (1.5 if i % 2 == 1 else -1.5)
+		_draw_unit(look.sp, anim, t + i * 0.21, p.round(), look.scale * float(fl.get("scale", 0.8)), face,
+				Color(0.85, 0.85, 0.85))
+	_draw_unit(look.sp, anim, t, g.pos.round(), look.scale, face, Color.WHITE)
+
+
+## One sprite frame standing on `foot` (scaled; face -1 = flipped to the left).
+func _draw_unit(sp: Dictionary, anim: String, t: float, foot: Vector2, scale: float, face: int,
+		mod: Color) -> void:
+	var a: Dictionary = sp.anims.get(anim, sp.anims.get("idle", sp.anims.values()[0]))
+	var frame := int(t * float(a.fps)) % int(a.frames)
+	var src := Rect2(frame * sp.w, 0, sp.w, sp.h)
+	draw_set_transform(foot, 0.0, Vector2(scale * face, scale))
+	draw_texture_rect_region(a.tex, Rect2(-sp.foot, Vector2(sp.w, sp.h)), src, mod)
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+
+## Flat ellipse on the ground; filled = side-colour patch under an army.
+func _draw_foot_ring(p: Vector2, r: float, col: Color, filled := false) -> void:
+	draw_set_transform(p, 0.0, Vector2(1.0, 0.45))
+	if filled:
+		draw_circle(Vector2.ZERO, r + 0.8, Color(0, 0, 0, 0.55))
+		var c := col
+		c.a = 0.55
+		draw_circle(Vector2.ZERO, r, c)
+	draw_arc(Vector2.ZERO, r, 0, TAU, 20, col, 1.0 if filled else 1.2)
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+
+func _draw_crown(p: Vector2) -> void:
+	draw_rect(Rect2(p.x - 2.5, p.y - 2.5, 5, 2.5), Color(0, 0, 0, 0.6))
+	draw_rect(Rect2(p.x - 2, p.y - 2, 4, 1.5), TRIM_HI)
+	for x in [-2.0, -0.5, 1.0]:
+		draw_rect(Rect2(p.x + x, p.y - 3, 1, 1), TRIM_HI)
 
 
 func _draw_top(font: Font) -> void:
