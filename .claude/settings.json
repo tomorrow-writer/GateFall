@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./gate-fall-game/.godot/**)",
+      "Read(./**/*.import)",
+      "Read(./**/*.uid)",
+      "Read(./art_src/**)",
+      "Read(./**/.DS_Store)"
+    ]
+  }
+}
