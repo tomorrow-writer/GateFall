@@ -35,6 +35,7 @@ const DIM := Color(0.75, 0.73, 0.68)
 const ALERT := Color("ff7a5a")
 const TOP_BAR := Rect2(0, 0, 320, 12)
 const BOTTOM_BAR := Rect2(0, 154, 320, 26)
+const PAUSE_HIT := Rect2(194, 0, 46, 12)  # "หยุด [Space]" / "×1" on the top bar: click = pause / go on
 
 var world: WorldSim = null
 var data: Dictionary
@@ -70,8 +71,10 @@ func _ready() -> void:
 	_bind(Campaign.world)
 	if world.get_general(selected) == null or world.get_general(selected).state == "captured":
 		selected = ""
-	paused = true  # back from a battle: look first, Space to go on
-	_log("กลับจากสนามรบ · Space เดินเวลาต่อ")
+	# Back from a battle: time goes on at once (it used to wait for Space, which
+	# looked like the map had frozen). Space / the clock label still pause.
+	paused = false
+	_log("กลับจากสนามรบ")
 	for e in world._take_events():
 		_on_event(e)
 	_check_battles()
@@ -111,6 +114,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		if _popup != null:
 			return
 		var p := get_local_mouse_position()
+		if event.button_index == MOUSE_BUTTON_LEFT and PAUSE_HIT.has_point(p):
+			paused = not paused
+			return
 		if event.button_index == MOUSE_BUTTON_RIGHT:
 			selected = ""
 		elif event.button_index == MOUSE_BUTTON_LEFT:
@@ -118,17 +124,19 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if not (event is InputEventKey and event.pressed and not event.echo):
 		return
+	# Physical key position, so 1/2/3/A work with a Thai (or any) layout too.
+	var k: int = event.physical_keycode if event.physical_keycode != 0 else event.keycode
 	if _popup != null:
 		if _popup_battle >= 0:
-			match event.keycode:
+			match k:
 				KEY_ENTER, KEY_KP_ENTER:
 					_fight(_popup_battle)
 				KEY_A:
 					_auto(_popup_battle)
-		elif world.winner != "" and event.keycode in [KEY_ENTER, KEY_KP_ENTER]:
+		elif world.winner != "" and k in [KEY_ENTER, KEY_KP_ENTER]:
 			_restart()
 		return
-	match event.keycode:
+	match k:
 		KEY_SPACE:
 			paused = not paused
 		KEY_1:
@@ -575,7 +583,7 @@ func _draw_top(font: Font) -> void:
 	var speeds: Array = data.time.speeds
 	var clock := "วันที่ %d" % (int(world.day) + 1)
 	_text(font, clock, Vector2(160, 9), 8, TRIM_HI, true)
-	var state := "หยุด [Space]" if paused else "×%d" % int(speeds[speed_i])
+	var state := "หยุด [Space]" if paused else "×%d [Space หยุด]" % int(speeds[speed_i])
 	_text(font, state, Vector2(200, 9), 6, ALERT if paused else DIM, false)
 	var x := 3.0
 	for side in ["S", "K"]:

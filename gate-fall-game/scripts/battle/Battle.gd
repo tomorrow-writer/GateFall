@@ -257,37 +257,40 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if not (event is InputEventKey and event.pressed and not event.echo):
 		return
+	# Physical key position, so the number / letter keys work with a Thai (or
+	# any) keyboard layout too.
+	var k: int = event.physical_keycode if event.physical_keycode != 0 else event.keycode
 	if phase == "fight" and sim != null and sim.phase == "offer":
-		match event.keycode:
+		match k:
 			KEY_ENTER, KEY_KP_ENTER:
 				_duel_choice("duel")
 			KEY_3, KEY_ESCAPE:
 				_duel_choice("retreat")
 		return
-	if event.keycode == KEY_F2:
+	if k == KEY_F2:
 		%PostFx.visible = not %PostFx.visible
 		return
-	if phase == "setup" and (event.keycode == KEY_QUOTELEFT or event.physical_keycode == KEY_QUOTELEFT):
+	if phase == "setup" and (k == KEY_QUOTELEFT):
 		_toggle_dev()
 		return
-	if phase == "setup" and dev_mode and event.keycode == KEY_7:
+	if phase == "setup" and dev_mode and k == KEY_7:
 		_cycle_troops(player_side)
 		return
-	if phase == "setup" and dev_mode and event.keycode == KEY_8:
+	if phase == "setup" and dev_mode and k == KEY_8:
 		_cycle_troops(_enemy_side)
 		return
 	if phase == "setup" and not menu_open and _picker != null:
 		var step := {KEY_LEFT: -1, KEY_RIGHT: 1, KEY_UP: -FormationPicker.COLS, KEY_DOWN: FormationPicker.COLS}
-		if step.has(event.keycode):
-			_picker.move(step[event.keycode])
+		if step.has(k):
+			_picker.move(step[k])
 			return
-	if event.keycode == KEY_TAB:
+	if k == KEY_TAB:
 		_toggle_menu()
 		return
-	if event.keycode == KEY_ESCAPE and menu_open:
+	if k == KEY_ESCAPE and menu_open:
 		_close_menu()
 		return
-	match event.keycode:
+	match k:
 		KEY_1:
 			_set_order("charge")
 		KEY_2:
