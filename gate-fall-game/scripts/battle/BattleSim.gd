@@ -185,6 +185,7 @@ class Unit:
 	var walking: bool = false
 	var flanking: bool = false  # raider on its raid run (any stage): may leave the lanes
 	var running: bool = false  # ...and out on the flank track: enemies neither chase nor block it
+	var raid_out: bool = false  # this raid it has reached its flank track (only then may it turn in)
 	var swing: float = 0.0  # attack swing timer (view only)
 	var born: float = 0.0  # spawn-in timer for split pieces (view only)
 	var bx: float = 0.0  # where a split piece came from (view only)
@@ -482,6 +483,7 @@ func step(dt: float) -> Array:
 		if not rmode:
 			u.running = false
 			u.flanking = false
+			u.raid_out = false
 		var dmode := us.dispersed and not u.is_general and not gmode and not rmode and _lanes >= 3 \
 				and us.split_lane < 0
 		# Disperse: troops keep out of the middle lane, each to its own side.
@@ -1281,11 +1283,14 @@ func _catches(u: Unit, raider: Unit) -> bool:
 ##      don't block it (they stand in the lanes), a special down that outer
 ##      lane still hits it
 ## then turn in at RAID_TURN px from the enemy general and fight as usual.
+## A raider always goes out to its track first (raid_out), even when the enemy
+## general is already close (out at the front): it comes in from the flank,
+## never straight through the fight.
 ## Returns true while still on the way (false = fight the general).
 func _raid_run(u: Unit, eg: Unit, dt: float, move_y: float, live: Array[Unit]) -> bool:
 	var f := float(u.side.facing)
 	var ahead := (eg.x - u.x) * f
-	if ahead <= RAID_TURN:
+	if ahead <= RAID_TURN and u.raid_out:
 		u.flanking = false
 		u.running = false
 		return false
@@ -1296,6 +1301,12 @@ func _raid_run(u: Unit, eg: Unit, dt: float, move_y: float, live: Array[Unit]) -
 		edge = float(_field.y_min) + 4.0 if top else float(_field.y_max) - 4.0
 	var on_track := absf(edge - u.y) <= maxf(3.0, _track * 0.5)
 	u.running = on_track
+	if on_track:
+		u.raid_out = true
+		if ahead <= RAID_TURN:
+			u.flanking = false
+			u.running = false
+			return false  # out on the flank already level with the general: turn in
 	var sp := u.spd * u.side.form_spd * u.side.raid_spd
 	var dx := 0.0
 	var dy := 0.0
@@ -1773,7 +1784,9 @@ func _apply_formation(s: Army, name: String) -> void:
 			s.divs += 1
 	s.form_command = str(f.get("command", ""))
 	s.dispersed = false
-	s.raiding = false
+	# raid_at_start: the raid group heads round the flank as soon as the battle
+	# starts (picking the formation is the order); E calls it back / out again.
+	s.raiding = s.form_command == "raid" and bool(f.get("raid_at_start", false))
 	s.raid_spd = float(f.get("raid_spd", 1))
 	s.raid_atk = float(f.get("raid_atk", 1))
 	s.disperse_atk = float(f.get("disperse_atk", 1))
