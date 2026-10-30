@@ -34,7 +34,13 @@
     "hit_flash": 0.15,
     "separation_min_d2": 0.0001,
     "_special_take_note": "true = specials are reduced by the target's order/formation damage-taken multipliers (hold, square), like normal hits.",
-    "special_take_mult": true
+    "special_take_mult": true,
+    "_class_mult_note": "Troop type counters (feature/troop-types), DF style rock-paper-scissors: damage x when a troop of class <attacker> hits one of class <target>. Classes come from units.<id>.class (default: ranged if it has ranged, else foot; generals = general, never scaled). foot (spears) brace against mounted, mounted ride down ranged, ranged shoot down slow foot. Starting values, tune with run_sims.",
+    "class_mult": {
+      "foot": { "mounted": 1.5 },
+      "mounted": { "ranged": 1.3 },
+      "ranged": { "foot": 1.2 }
+    }
   },
 
   "_lanes_note": "The field height (y_min..y_max) splits into this many equal lanes, top to bottom. Lane specials hit one lane; the target side dodges by opening it (split).",
@@ -102,6 +108,17 @@
       "hp": 14, "atk": 1.3, "cd": 1.4, "spd": 22,
       "reach": 260, "radius": 8,
       "ranged": { "speed": 260, "close_range": 16, "close_mult": 0.5, "melee_take": 2, "aim_y": 3, "arc": 28 }
+    },
+    "_mounted_note": "Fast troops (feature/troop-types), class mounted: quick to reach archers and the enemy general, weak against foot (class_mult). Human cavalry hits hard; the slime hopper is small and quickest. Placeholder art drawn by BattleView until sprites exist.",
+    "cavalry": {
+      "kind": "cavalry", "class": "mounted",
+      "hp": 19, "atk": 2.6, "cd": 1.1, "spd": 40,
+      "reach": 25, "radius": 9
+    },
+    "slime_hopper": {
+      "kind": "hopper", "class": "mounted",
+      "hp": 12, "atk": 1.6, "cd": 0.9, "spd": 46,
+      "reach": 22, "radius": 7
     },
     "_generals_note": "Generals start at general_spot behind their army and stay there (hitting only enemies that reach them) until sent in with general_charge; sized so a general-vs-general duel (when all troops are gone) is about even: slime 310 hp / 17 atk vs knight 320 / 18. Each general has a style: front_take = its own damage-taken x when sent in (else general_charge.front_take), ai_charge = how the AI uses it: front (fights at the front from the start), mopup (goes in to finish a beaten army), never. The slime general is a brawler (strong at the front, so it pays more there); the knight general is a commander who should stay back. duel = style in the one-on-one duel (see duel_rules): hits blows per turn of power each (+- jitter share), each landing with chance accuracy. Slime general: two quick, steady blows; knight general: one heavy, swingy blow (same expected damage per turn, roughly)",
     "general_slime": {
@@ -374,7 +391,23 @@
       { "label": "หอก 15 + เวท 15", "units": [["slime_big", 15], ["slime_mage", 15]] },
       { "label": "อัศวิน 30", "units": [["knight", 30]] },
       { "label": "พลธนู 30 (ยิงไกล)", "units": [["archer", 30]] },
-      { "label": "อัศวิน 20 + ธนู 10", "units": [["knight", 20], ["archer", 10]] }
+      { "label": "อัศวิน 20 + ธนู 10", "units": [["knight", 20], ["archer", 10]] },
+      { "label": "สไลม์กระโดด 30 (เร็ว)", "units": [["slime_hopper", 30]] },
+      { "label": "ทหารม้า 30 (เร็ว)", "units": [["cavalry", 30]] }
+    ]
+  },
+
+  "_troop_types_note": "Troop types each race can field (feature/troop-types, Art 2026-10-30): a general picks only from its own race's list (its origin, not the side it serves), and only types whose rank (index into world_map ranks: 0 นายกอง, 1 นายพัน, 2 แม่ทัพ, 3 จอมพล) it has reached. Switching type is one council order. label / desc are what the council screen shows; stats live in units.",
+  "troop_types": {
+    "slime": [
+      { "unit": "slime_big", "label": "สไลม์ใหญ่", "rank": 0, "desc": "ตีใกล้ · ตายแล้วแตกเป็นสไลม์เล็ก 2 ตัว" },
+      { "unit": "slime_mage", "label": "สไลม์เวท", "rank": 1, "desc": "ยิงไกล · ยิงทหารเดินเท้าได้ดี แต่โดนประชิดแล้วเปราะ" },
+      { "unit": "slime_hopper", "label": "สไลม์กระโดด", "rank": 2, "desc": "เร็ว · ไล่ฆ่าพวกยิงไกล แต่แพ้ทหารหอก" }
+    ],
+    "human": [
+      { "unit": "knight", "label": "ทหารหอก", "rank": 0, "desc": "ตีใกล้ · ยืนแนวหน้า ตั้งหอกรับทหารม้า" },
+      { "unit": "archer", "label": "พลธนู", "rank": 1, "desc": "ยิงไกล · ยิงทหารเดินเท้าได้ดี แต่โดนประชิดแล้วเปราะ" },
+      { "unit": "cavalry", "label": "ทหารม้า", "rank": 2, "desc": "เร็ว ตีแรง · ไล่ฆ่าพวกยิงไกล แต่แพ้ทหารหอก" }
     ]
   },
 

@@ -238,6 +238,7 @@ var _split_cfg: Dictionary
 var _gcharge_cfg: Dictionary
 var _switch_delay: float = 0.0
 var _special_take: bool = false
+var _class_mult: Dictionary = {}  # combat.class_mult: {attacker class: {target class: x}}
 var _track: float = 0.0  # field.flank_track: px of flank track above / below the lanes (raiders only)
 
 
@@ -279,6 +280,7 @@ func _init(config: Dictionary, overrides: Dictionary = {}, shared_rng: BattleRng
 	_gcharge_cfg = cfg.get("general_charge", {})
 	_switch_delay = float(cfg.get("commands", {}).get("switch_delay", 0))
 	_special_take = bool(_combat.get("special_take_mult", false))
+	_class_mult = _combat.get("class_mult", {})
 	_track = float(_field.get("flank_track", 0))
 	var brain_seed := rng.state
 
@@ -615,6 +617,9 @@ func step(dt: float) -> Array:
 				# Behind castle walls (world-map siege): troops only, not the general.
 				if v.side.wall_take != 1.0 and not v.is_general:
 					dmg *= v.side.wall_take
+				# Troop type counters (spears vs horses, horses vs archers, ...).
+				if not _class_mult.is_empty():
+					dmg *= class_mult(u.cls, v.cls)
 				if not u.ranged.is_empty() and d > float(u.ranged.get("close_range", 0)):
 					_fire(u, v, dmg, d)
 				else:
@@ -817,6 +822,12 @@ func _step_shots(dt: float, hit_flash: float, mp_on_hit: float) -> void:
 		elif v.alive:
 			_apply_hit(units[sh.by], v, float(sh.dmg), hit_flash, mp_on_hit)
 	shots = keep
+
+
+## Damage x when a troop of class a hits one of class b (combat.class_mult).
+func class_mult(a: String, b: String) -> float:
+	var row: Dictionary = _class_mult.get(a, {})
+	return float(row.get(b, 1.0))
 
 
 ## Troop type per spot for side config sd: override "units" = [[type, count],
@@ -1743,6 +1754,7 @@ func _make_unit(s: Army, type_id: String) -> Unit:
 	u.split = def.get("split", {})
 	u.ranged = def.get("ranged", {})
 	u.is_general = def.get("role", "") == "general"
+	u.cls = str(def.get("class", "general" if u.is_general else ("ranged" if not u.ranged.is_empty() else "foot")))
 	u.front_take = float(def.get("front_take", 0))
 	if def.has("scale_from"):
 		var base: Dictionary = cfg.units[def.scale_from]

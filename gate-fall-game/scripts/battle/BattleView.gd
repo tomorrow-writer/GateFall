@@ -24,6 +24,7 @@ const KNIGHT_DARK := Color("5a6478")
 const PLUME := Color("c8443c")
 const MAGE := Color("5fc9b8")  # slime mage (ranged): teal body, violet orb
 const MAGE_ORB := Color("c98cff")
+const HOPPER := Color("b7d84a")  # slime hopper (fast): lime, small, big bounce
 const ARCHER := Color("a8b890")  # archer (ranged): leather green over the knight's grey
 const FLASH := Color(1, 1, 1)
 const WAVE := Color(0.45, 1.0, 0.55)
@@ -831,15 +832,17 @@ func _draw_unit(u) -> void:
 		_draw_general_marks(u, p)
 	if not _draw_sprite(u, p, fade, flash, 1.0, true):
 		match u.kind:
-			"big", "mini", "mage":
+			"big", "mini", "mage", "hopper":
 				_draw_slime(u, p, fade, flash)
+			"cavalry":
+				_draw_rider(u, p, fade, flash)
 			"general":
 				_draw_general(u, p, fade, flash)
 			_:
 				_draw_knight(u, p, fade, flash)
 	if u.alive and u.hp < u.max_hp and not u.is_general and _clock - _hurt_at.get(u.id, -99.0) < HURT_BAR_TIME:
 		var w := 14.0 if u.kind != "mini" else 9.0
-		var bar_y := -26.0 if u.kind in ["knight", "archer"] else (-20.0 if u.kind in ["big", "mage"] else -14.0)
+		var bar_y := -26.0 if u.kind in ["knight", "archer", "cavalry"] else (-20.0 if u.kind in ["big", "mage"] else -14.0)
 		if _sprites.has(u.type_id):
 			bar_y = -float(_field_sprite(u.type_id).height) - 2.0
 		var top := p + Vector2(-w / 2.0, bar_y)
@@ -849,15 +852,16 @@ func _draw_unit(u) -> void:
 
 func _draw_slime(u, p: Vector2, fade: float, flash: bool) -> void:
 	var mage: bool = u.kind == "mage"
-	var big: bool = u.kind == "big" or mage
-	var r := 9.0 if big else 5.5
-	var col := (MAGE if mage else SLIME) if big else MINI
+	var hopper: bool = u.kind == "hopper"
+	var big: bool = u.kind == "big" or mage or hopper
+	var r := (7.0 if hopper else 9.0) if big else 5.5
+	var col := (MAGE if mage else (HOPPER if hopper else SLIME)) if big else MINI
 	if flash:
 		col = FLASH
 	# Split pieces pop in from their parent
 	var born: float = _clock - _born_at.get(u.id, -10.0)
 	var pop := clampf(born / 0.25, 0.0, 1.0) if born < 0.25 else 1.0
-	var bob := absf(sin(u.anim * 9.0)) * 2.0 if u.walking else 0.0
+	var bob := absf(sin(u.anim * 9.0)) * (6.0 if hopper else 2.0) if u.walking else 0.0
 	var squash := 0.72 + (0.08 if u.walking and bob < 0.5 else 0.0)
 	if not u.alive:
 		squash *= fade
@@ -876,10 +880,24 @@ func _draw_slime(u, p: Vector2, fade: float, flash: bool) -> void:
 		draw_line(c + Vector2(f * 5, 4), top, Color("8a6a4a"), 1.0)
 		draw_circle(top, 2.5 if u.swing > 0.0 else 1.8, MAGE_ORB)
 		return
+	if hopper:
+		return  # hopper: no weapon, it rams
 	# spear
 	if big and u.alive:
 		var thrust := 5.0 if u.swing > 0.0 else 0.0
 		draw_line(c + Vector2(f * 3, 2), c + Vector2(f * (14 + thrust), -1), Color("c9a46a"), 1.0)
+
+
+## Placeholder cavalry trooper (until real art): the horseman of the charge
+## special, lance thrust forward while attacking.
+func _draw_rider(u, p: Vector2, fade: float, flash: bool) -> void:
+	var f: float = _face(u)
+	if not u.alive:
+		draw_rect(Rect2(p + Vector2(-10, -6), Vector2(20, 6)), Color(KNIGHT_DARK, fade))
+		return
+	var bob := absf(sin(u.anim * 10.0)) * 1.5 if u.walking else 0.0
+	var col := FLASH if flash else Color("e8e8f0")
+	_draw_horseman(p + Vector2(f * (3.0 if u.swing > 0.0 else 0.0), -bob), f, col)
 
 
 func _draw_knight(u, p: Vector2, fade: float, flash: bool) -> void:
