@@ -13,8 +13,10 @@
 ##     goes on if it was only passing through)
 ##   - walk into a castle with enemy generals = battle with each in turn
 ##   - enemy generals meeting on a road = battle there, the winner walks on
-##   - the loser walks back to its nearest own castle (through own castles
-##     only); no way home = captured
+##   - the loser walks back the way it came: to `home`, the last own castle it
+##     left or passed (through own castles only). Home lost (or the one fought
+##     over) = the nearest own castle, but never by walking on past the battle
+##     (the road ahead on a road fight). No way home = captured
 ##   - a general resting in its own castle gets troops back over time
 ##   - take the enemy capital (or capture all its generals) = win the war
 ##   - every council.every_days the map stops for a council (like DF): each
@@ -64,6 +66,7 @@ class General:
 	var castle := ""  # castle it stands in ("" while walking)
 	var pos := Vector2.ZERO
 	var from := ""  # last castle passed: the road walked is from -> path[0]
+	var home := ""  # last OWN castle it left or passed: where it falls back to
 	var path: Array = []  # castles still to reach, the next one first
 	var state := "idle"  # idle | moving | battle | captured
 	var retreating := false  # walking home after a lost battle (nobody stops it)
@@ -152,6 +155,7 @@ func _init(map_data: Dictionary, ai: Array = [], seed_value: int = 0) -> void:
 		g.troops = float(gd.get("troops", max_troops_of(g)))
 		g.castle = gd.castle
 		g.from = gd.castle
+		g.home = gd.castle
 		g.pos = castles[gd.castle].pos
 		generals.append(g)
 	council_cfg = data.get("council", {})
@@ -215,7 +219,8 @@ static func other_side(side: String) -> String:
 
 ## Shortest road path a -> b as castle ids (both ends included), [] if none.
 ## through: if set, every castle in between must belong to that side.
-func shortest(a: String, b: String, through: String = "") -> Array:
+## block: castles the path may not enter at all (not even as the end).
+func shortest(a: String, b: String, through: String = "", block: Array = []) -> Array:
 	if a == b:
 		return [a]
 	var dist := {a: 0.0}
@@ -232,6 +237,8 @@ func shortest(a: String, b: String, through: String = "") -> Array:
 		if cur != a and through != "" and castles[cur].owner != through:
 			continue  # may end here but not pass through
 		for n in adj[cur]:
+			if block.has(n):
+				continue
 			var nd: float = dist[cur] + castles[cur].pos.distance_to(castles[n].pos)
 			if not dist.has(n) or nd < dist[n]:
 				dist[n] = nd
@@ -338,6 +345,8 @@ func _walk(g: General, dist: float) -> void:
 			dist -= d
 			var cid: String = g.path.pop_front()
 			g.from = cid
+			if castles[cid].owner == g.side:
+				g.home = cid
 			_arrive(g, cid)
 		else:
 			g.pos += (to - g.pos) / d * dist
@@ -369,6 +378,7 @@ func _capture(cid: String, g: General, passing := false) -> void:
 	var c: Dictionary = castles[cid]
 	var was: String = c.owner
 	c.owner = g.side
+	g.home = cid
 	if was != g.side:
 		c.wall = maxi(0, int(c.wall) - int(siege_cfg.get("wall_lost_on_capture", 1)))
 	if not passing:
@@ -528,18 +538,28 @@ func resolve_battle(id: int, winner_side: String, left: Dictionary, fell: Dictio
 	_check_wipeout()
 
 
-## A beaten general walks back to its nearest own castle; no way home = captured.
+## A beaten general walks back the way it came, to `home` (the last own castle
+## it left or passed). If home is lost or is the castle fought over, the
+## nearest own castle instead. Either way it never walks on past the battle:
+## on a road it turns back (from g.from, the road ahead path[0] is shut), at a
+## castle it leaves from that castle. No way home = captured.
 func _send_home(g: General, avoid: String = "") -> void:
-	var starts := [g.from] if g.castle == "" else [g.castle]
-	if g.castle == "" and not g.path.is_empty():
-		starts.append(g.path[0])
+	var start: String = g.castle if g.castle != "" else g.from
+	var block := []
+	if g.castle == "" and not g.path.is_empty() and str(g.path[0]) != start:
+		block.append(str(g.path[0]))  # the road ahead, toward / past the winner
+	if avoid != "" and avoid != start:
+		block.append(avoid)
 	var best := []
-	var best_len := INF
-	for s in starts:
+	if g.home != "" and g.home != avoid and not block.has(g.home) \
+			and castles.has(g.home) and castles[g.home].owner == g.side:
+		best = shortest(start, g.home, g.side, block)
+	if best.is_empty():
+		var best_len := INF
 		for cid in castles_of(g.side):
-			if cid == avoid:
+			if cid == avoid or block.has(cid):
 				continue
-			var p := shortest(s, cid, g.side)
+			var p := shortest(start, cid, g.side, block)
 			if p.is_empty():
 				continue
 			var l := path_length(g.pos, p)
@@ -753,6 +773,7 @@ func persuade(by: General, p: General) -> bool:
 	p.state = "idle"
 	p.castle = by.castle
 	p.from = by.castle
+	p.home = by.castle
 	p.pos = castles[by.castle].pos
 	p.troops = 0.0
 	p.loyalty = int(prisoner_cfg.get("joined_loyalty", 50))
