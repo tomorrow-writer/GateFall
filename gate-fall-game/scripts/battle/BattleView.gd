@@ -104,6 +104,21 @@ const CAM_PAN_SPEED := 200.0
 var cam_mode: int = CamMode.AUTO
 var _free_x := 0.0
 
+# --- zoom: near (DF close-up) / far (overview), [C] or trackpad pinch ----------
+# The view node is scaled by `zoom`; cam stays the world point at the screen's
+# top-left. Far is about FAR_ZOOM, snapped so that one sprite pixel is a whole
+# number of window pixels (x4 window -> x3, x6 -> x5): pixel art stays crisp.
+# Far is the default and carries over to the next battle.
+const FAR_ZOOM := 0.75
+## World y that keeps its screen height at every zoom: the middle of the
+## field between the flank tracks (y 106-244), so zooming out shows the same
+## amount more above and below.
+const CAM_Y_PIVOT := 175.0
+const ZOOM_SPEED := 8.0
+var zoom_far := true
+var zoom := 1.0
+var _zoom_ready := false
+
 
 func bind(s: BattleSim) -> void:
 	sim = s
@@ -119,6 +134,7 @@ func bind(s: BattleSim) -> void:
 	_duel_nums.clear()
 	_cutin_at.clear()
 	_cam_ready = false
+	_zoom_ready = false
 	if cam_mode == CamMode.FREE:
 		cam_mode = CamMode.AUTO
 	capture_prev()
@@ -309,14 +325,15 @@ func _process(delta: float) -> void:
 ## Where the camera wants to be (x of the screen's left edge) in the current
 ## camera mode, clamped so the screen never leaves the field.
 func _camera_goal() -> float:
-	var max_x := float(sim.cfg.field.width) - SCREEN.x
+	var vw := view_size().x
+	var max_x := maxf(0.0, float(sim.cfg.field.width) - vw)
 	match cam_mode:
 		CamMode.FREE:
 			return clampf(_free_x, 0.0, max_x)
 		CamMode.MY_GENERAL, CamMode.FOE_GENERAL:
 			var g = _general_of(cam_mode == CamMode.MY_GENERAL)
 			if g != null:
-				return clampf(_pos(g).x - SCREEN.x / 2.0, 0.0, max_x)
+				return clampf(_pos(g).x - vw / 2.0, 0.0, max_x)
 	return _auto_camera_goal()
 
 
@@ -350,19 +367,52 @@ func pan_camera(dx: float) -> void:
 	if cam_mode != CamMode.FREE:
 		cam_mode = CamMode.FREE
 		_free_x = cam.x
-	_free_x = clampf(_free_x + dx, 0.0, float(sim.cfg.field.width) - SCREEN.x)
+	_free_x = clampf(_free_x + dx, 0.0, maxf(0.0, float(sim.cfg.field.width) - view_size().x))
 
 
-## A click at screen point p: on the radar, centre the camera there (FREE).
-## Returns true if the click was on the radar.
-func radar_click(p: Vector2) -> bool:
+## A click at field point fp (the view's local mouse position): if it is on
+## the radar, centre the camera there (FREE). Returns true if it was.
+func radar_click(fp: Vector2) -> bool:
+	var p := to_screen(fp)
 	if sim == null or sim.time <= 0.0 or sim.phase == "duel" or not RADAR.grow(2).has_point(p):
 		return false
 	var w := float(sim.cfg.field.width)
 	var fx := clampf((p.x - RADAR.position.x) / RADAR.size.x, 0.0, 1.0) * w
 	cam_mode = CamMode.FREE
-	_free_x = clampf(fx - SCREEN.x / 2.0, 0.0, w - SCREEN.x)
+	var vw := view_size().x
+	_free_x = clampf(fx - vw / 2.0, 0.0, maxf(0.0, w - vw))
 	return true
+
+
+## How much of the field the screen shows (world px) at the current zoom.
+func view_size() -> Vector2:
+	return SCREEN / zoom
+
+
+## Field point -> screen pixel (0..SCREEN).
+func to_screen(p: Vector2) -> Vector2:
+	return (p - cam) * zoom
+
+
+## [C] / pinch: near <-> far. far = true/false sets it, null toggles.
+func set_zoom_far(far = null) -> void:
+	var want: bool = (not zoom_far) if far == null else bool(far)
+	if want == zoom_far:
+		return
+	zoom_far = want
+	if cam_mode == CamMode.FREE:  # keep the same centre while zooming
+		var c := _free_x + view_size().x / 2.0
+		_free_x = c - SCREEN.x / _zoom_target() / 2.0
+
+
+## Zoom to settle on: 1 (near) or FAR_ZOOM snapped to whole window pixels.
+func _zoom_target() -> float:
+	if not zoom_far:
+		return 1.0
+	var k := get_viewport().get_stretch_transform().get_scale().x if is_inside_tree() else 0.0
+	if k < 1.5:
+		return FAR_ZOOM
+	return maxf(1.0, roundf(k * FAR_ZOOM)) / k
 
 
 ## AUTO: the middle of the clash (mean x of all troops still standing), or of
@@ -392,7 +442,8 @@ func _auto_camera_goal() -> float:
 			rn += 1
 	if rn > 0:
 		cx = rx / rn
-	return clampf(cx - SCREEN.x / 2.0, 0.0, float(sim.cfg.field.width) - SCREEN.x)
+	var vw := view_size().x
+	return clampf(cx - vw / 2.0, 0.0, maxf(0.0, float(sim.cfg.field.width) - vw))
 
 
 ## Camera y: CAM_Y, tilted toward the flank track a raid is running along
@@ -407,7 +458,9 @@ func _camera_goal_y() -> float:
 				if edge == 0 or s.id == player_side:
 					edge = s.raid_edge
 				break
-	return CAM_Y + RAID_CAM_SHIFT * edge
+	# zoomed out the flank tracks are on screen anyway: tilt only near
+	var near := clampf((zoom - FAR_ZOOM) / (1.0 - FAR_ZOOM), 0.0, 1.0)
+	return CAM_Y_PIVOT - (CAM_Y_PIVOT - CAM_Y) / zoom + RAID_CAM_SHIFT * edge * near
 
 
 func _update_camera(delta: float) -> void:
@@ -416,7 +469,16 @@ func _update_camera(delta: float) -> void:
 	_sync_ground()
 	if sim.phase == "duel":
 		position = Vector2.ZERO  # the duel close-up is drawn in screen space
+		scale = Vector2.ONE
 		return
+	var zt := _zoom_target()
+	if not _zoom_ready:
+		zoom = zt
+		_zoom_ready = true
+	else:
+		zoom = lerpf(zoom, zt, 1.0 - exp(-ZOOM_SPEED * delta))
+		if absf(zoom - zt) < 0.002:
+			zoom = zt  # settle exactly: crisp pixels
 	var goal := _camera_goal()
 	var goal_y := _camera_goal_y()
 	if not _cam_ready:
@@ -427,12 +489,13 @@ func _update_camera(delta: float) -> void:
 		var follow := CAM_FOLLOW if cam_mode == CamMode.AUTO else CAM_FOLLOW_MANUAL
 		cam.x = lerpf(cam.x, goal, 1.0 - exp(-follow * delta))
 		cam.y = lerpf(cam.y, goal_y, 1.0 - exp(-CAM_FOLLOW * delta))
-	position = -cam
+	scale = Vector2(zoom, zoom)
+	position = -cam * zoom
 
 
 ## Draw in screen pixels (0..SCREEN) while the node is offset by the camera.
 func _screen_begin() -> void:
-	draw_set_transform(cam)
+	draw_set_transform(cam, 0.0, Vector2.ONE / zoom)
 
 
 func _screen_end() -> void:
@@ -516,7 +579,8 @@ func _draw_radar() -> void:
 		else:
 			draw_rect(Rect2(p, Vector2(1, 1)), col)
 	var vx := RADAR.position.x + cam.x / w * RADAR.size.x
-	draw_rect(Rect2(vx, RADAR.position.y, SCREEN.x / w * RADAR.size.x, RADAR.size.y), Color(1, 1, 1, 0.55), false, 1.0)
+	var vw := minf(view_size().x, w) / w * RADAR.size.x
+	draw_rect(Rect2(vx, RADAR.position.y, vw, RADAR.size.y), Color(1, 1, 1, 0.55), false, 1.0)
 
 
 ## Camera mode above the radar, only when the player has taken the camera.
@@ -540,7 +604,8 @@ func _draw_general_alert() -> void:
 	if g == null or not g.alive:
 		return
 	var p := _pos(g)
-	var sx := p.x - cam.x
+	var sp := to_screen(p)
+	var sx := sp.x
 	if sx >= 0.0 and sx <= SCREEN.x:
 		return
 	var threat := false
@@ -554,7 +619,7 @@ func _draw_general_alert() -> void:
 		return
 	var blink := 0.5 + 0.5 * sin(_clock * 14.0)
 	var col := Color(DANGER, 0.5 + 0.5 * blink)
-	var y := clampf(p.y - cam.y, 30.0, 120.0)
+	var y := clampf(sp.y, 30.0, 120.0)
 	var d := -1.0 if sx < 0.0 else 1.0
 	var tip := Vector2(3.0 if d < 0.0 else SCREEN.x - 3.0, y)
 	draw_colored_polygon(PackedVector2Array([tip, tip + Vector2(-d * 9.0, -6.0), tip + Vector2(-d * 9.0, 6.0)]), col)
@@ -989,7 +1054,7 @@ func _draw_lane_timer() -> void:
 	var text := "เปิด %.1f" % maxf(0.0, s.split_left)
 	var tw := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, 8).x
 	var x := 4.0 if s.facing > 0 else SCREEN.x - 4.0 - tw
-	draw_string(font, Vector2(x, b.x + (b.y - b.x) / 2.0 + 3.0 - cam.y), text,
+	draw_string(font, Vector2(x, (b.x + (b.y - b.x) / 2.0 - cam.y) * zoom + 3.0), text,
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color(OPEN_LANE, 0.9))
 
 
@@ -1148,9 +1213,9 @@ func _draw_cutin() -> void:
 		var rows := floorf(h / CUTIN_SCALE)
 		var gx := 6.0 + slide  # frame's left edge, distance from the caster's screen edge
 		var origin := Vector2(gx if f > 0.0 else SCREEN.x - gx, top)
-		draw_set_transform(cam + origin, 0.0, Vector2(CUTIN_SCALE * f, CUTIN_SCALE))
+		draw_set_transform(cam + origin / zoom, 0.0, Vector2(CUTIN_SCALE * f, CUTIN_SCALE) / zoom)
 		draw_texture_rect_region(a.tex, Rect2(0, 0, w, rows), Rect2(i * w, 0, w, rows), Color(1, 1, 1, open))
-		draw_set_transform(cam)
+		_screen_begin()
 		drew_general = true
 	# sparks drifting off the staff / blade toward the name
 	for j in 6:

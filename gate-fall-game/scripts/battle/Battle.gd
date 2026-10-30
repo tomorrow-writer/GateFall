@@ -335,7 +335,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 ## Camera control (see BattleView, "player camera control"): wheel / trackpad
 ## pan, middle click = back to AUTO, left click on the radar = jump there,
-## [V] = cycle what the camera follows. [,] [.] are polled in BattleView.
+## [V] = cycle what the camera follows, [C] / pinch = zoom near / far. [,] [.] are polled in BattleView.
 ## Returns true if the event was used.
 const CAM_WHEEL_STEP := 24.0
 const CAM_GESTURE_GAIN := 6.0
@@ -355,7 +355,13 @@ func _camera_input(event: InputEvent) -> bool:
 				view.camera_to_auto()
 				return true
 			MOUSE_BUTTON_LEFT:
-				return view.radar_click(view.get_local_mouse_position() - view.cam)
+				return view.radar_click(view.get_local_mouse_position())
+	if event is InputEventMagnifyGesture:  # trackpad pinch: spread = near, pinch = far
+		if event.factor > 1.02:
+			view.set_zoom_far(false)
+		elif event.factor < 0.98:
+			view.set_zoom_far(true)
+		return true
 	if event is InputEventPanGesture:  # Mac trackpad two-finger swipe
 		if absf(event.delta.x) > absf(event.delta.y) * 0.5:
 			view.pan_camera(event.delta.x * CAM_GESTURE_GAIN)
@@ -364,6 +370,9 @@ func _camera_input(event: InputEvent) -> bool:
 		var k: int = event.physical_keycode if event.physical_keycode != 0 else event.keycode
 		if k == KEY_V:
 			view.cycle_camera_mode()
+			return true
+		if k == KEY_C:
+			view.set_zoom_far()
 			return true
 	return false
 
