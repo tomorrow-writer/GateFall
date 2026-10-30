@@ -88,6 +88,22 @@ const RADAR := Rect2(4, 128, 72, 20)
 var cam := Vector2(0, CAM_Y)
 var _cam_ready := false  # false = jump straight to the goal (new battle)
 
+# --- player camera control (DF's CAMERA Manual/Auto) ----------------------------
+# The field is only 160 px wider than the screen, so the choice is really "look
+# left / middle / right". [V] cycles what the camera follows: AUTO (the clash,
+# as before) -> MY_GENERAL -> FOE_GENERAL. Wheel / trackpad / [,] [.] pan by
+# hand and clicking the radar jumps there (FREE: the camera stays put until [V]
+# or a middle click sends it back to AUTO). Follow modes carry over to the next
+# battle; FREE does not. Works while the command menu has time stopped.
+enum CamMode { AUTO, MY_GENERAL, FOE_GENERAL, FREE }
+const CAM_MODE_LABELS := ["อัตโนมัติ", "แม่ทัพเรา", "แม่ทัพศัตรู", "เลื่อนเอง"]
+## Camera catch-up (1/s) in the player's modes: snappier than AUTO.
+const CAM_FOLLOW_MANUAL := 10.0
+## [,] [.] held: pan speed (px/s).
+const CAM_PAN_SPEED := 200.0
+var cam_mode: int = CamMode.AUTO
+var _free_x := 0.0
+
 
 func bind(s: BattleSim) -> void:
 	sim = s
@@ -103,6 +119,8 @@ func bind(s: BattleSim) -> void:
 	_duel_nums.clear()
 	_cutin_at.clear()
 	_cam_ready = false
+	if cam_mode == CamMode.FREE:
+		cam_mode = CamMode.AUTO
 	capture_prev()
 	_update_camera(0.0)
 	queue_redraw()
@@ -276,14 +294,81 @@ func _process(delta: float) -> void:
 		if _clock - f.t0 < f.dur:
 			keep.append(f)
 	_fx = keep
+	# [,] [.] held: pan (physical keys, so a Thai layout works too)
+	var pan := 0.0
+	if Input.is_physical_key_pressed(KEY_COMMA):
+		pan -= 1.0
+	if Input.is_physical_key_pressed(KEY_PERIOD):
+		pan += 1.0
+	if pan != 0.0:
+		pan_camera(pan * CAM_PAN_SPEED * delta)
 	_update_camera(delta)
 	queue_redraw()
 
 
-## Where the camera wants to be: the middle of the clash (mean x of all troops
-## still standing), or of the player's army before the battle starts; generals
-## only when no troops are left. Clamped so the screen never leaves the field.
+## Where the camera wants to be (x of the screen's left edge) in the current
+## camera mode, clamped so the screen never leaves the field.
 func _camera_goal() -> float:
+	var max_x := float(sim.cfg.field.width) - SCREEN.x
+	match cam_mode:
+		CamMode.FREE:
+			return clampf(_free_x, 0.0, max_x)
+		CamMode.MY_GENERAL, CamMode.FOE_GENERAL:
+			var g = _general_of(cam_mode == CamMode.MY_GENERAL)
+			if g != null:
+				return clampf(_pos(g).x - SCREEN.x / 2.0, 0.0, max_x)
+	return _auto_camera_goal()
+
+
+## General of the player's side (mine = true) or the enemy's, null if none.
+func _general_of(mine: bool):
+	for u in sim.units:
+		if u.is_general and (u.side.id == player_side) == mine:
+			return u
+	return null
+
+
+## [V]: AUTO -> MY_GENERAL -> FOE_GENERAL -> AUTO; from FREE back to AUTO.
+func cycle_camera_mode() -> void:
+	match cam_mode:
+		CamMode.AUTO:
+			cam_mode = CamMode.MY_GENERAL
+		CamMode.MY_GENERAL:
+			cam_mode = CamMode.FOE_GENERAL
+		_:
+			cam_mode = CamMode.AUTO
+
+
+func camera_to_auto() -> void:
+	cam_mode = CamMode.AUTO
+
+
+## Pan by hand (field px, + = right): switches to FREE from where the camera is.
+func pan_camera(dx: float) -> void:
+	if sim == null or sim.phase == "duel":
+		return
+	if cam_mode != CamMode.FREE:
+		cam_mode = CamMode.FREE
+		_free_x = cam.x
+	_free_x = clampf(_free_x + dx, 0.0, float(sim.cfg.field.width) - SCREEN.x)
+
+
+## A click at screen point p: on the radar, centre the camera there (FREE).
+## Returns true if the click was on the radar.
+func radar_click(p: Vector2) -> bool:
+	if sim == null or sim.time <= 0.0 or sim.phase == "duel" or not RADAR.grow(2).has_point(p):
+		return false
+	var w := float(sim.cfg.field.width)
+	var fx := clampf((p.x - RADAR.position.x) / RADAR.size.x, 0.0, 1.0) * w
+	cam_mode = CamMode.FREE
+	_free_x = clampf(fx - SCREEN.x / 2.0, 0.0, w - SCREEN.x)
+	return true
+
+
+## AUTO: the middle of the clash (mean x of all troops still standing), or of
+## the player's army before the battle starts; generals only when no troops are
+## left.
+func _auto_camera_goal() -> float:
 	var sum := 0.0
 	var n := 0
 	var setup: bool = sim.time <= 0.0
@@ -339,7 +424,8 @@ func _update_camera(delta: float) -> void:
 		cam.y = goal_y
 		_cam_ready = true
 	else:
-		cam.x = lerpf(cam.x, goal, 1.0 - exp(-CAM_FOLLOW * delta))
+		var follow := CAM_FOLLOW if cam_mode == CamMode.AUTO else CAM_FOLLOW_MANUAL
+		cam.x = lerpf(cam.x, goal, 1.0 - exp(-follow * delta))
 		cam.y = lerpf(cam.y, goal_y, 1.0 - exp(-CAM_FOLLOW * delta))
 	position = -cam
 
@@ -394,6 +480,8 @@ func _draw() -> void:
 	_draw_lane_timer()
 	_draw_banners()
 	_draw_radar()
+	_draw_camera_label()
+	_draw_general_alert()
 	_draw_cutin()
 	if sim.phase == "offer":
 		draw_rect(Rect2(Vector2.ZERO, SCREEN), Color(0, 0, 0, 0.45))
@@ -429,6 +517,52 @@ func _draw_radar() -> void:
 			draw_rect(Rect2(p, Vector2(1, 1)), col)
 	var vx := RADAR.position.x + cam.x / w * RADAR.size.x
 	draw_rect(Rect2(vx, RADAR.position.y, SCREEN.x / w * RADAR.size.x, RADAR.size.y), Color(1, 1, 1, 0.55), false, 1.0)
+
+
+## Camera mode above the radar, only when the player has taken the camera.
+func _draw_camera_label() -> void:
+	if cam_mode == CamMode.AUTO:
+		return
+	var font := ThemeDB.fallback_font
+	var text := "กล้อง: %s [V]" % CAM_MODE_LABELS[cam_mode]
+	var size := 8
+	var tw := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x
+	var box := Rect2(RADAR.position.x - 1.0, RADAR.position.y - 12.0, roundf(tw + 6.0), 10.0)
+	draw_rect(box, Color(0.02, 0.03, 0.08, 0.75))
+	draw_string(font, Vector2(box.position.x + 3.0, box.position.y + 8.0), text,
+			HORIZONTAL_ALIGNMENT_LEFT, -1, size, Color(0.95, 0.85, 0.55))
+
+
+## The player's general is off screen and an enemy special is coming down its
+## lane (or the whole field): a blinking red arrow at that screen edge.
+func _draw_general_alert() -> void:
+	var g = _general_of(true)
+	if g == null or not g.alive:
+		return
+	var p := _pos(g)
+	var sx := p.x - cam.x
+	if sx >= 0.0 and sx <= SCREEN.x:
+		return
+	var threat := false
+	for s in sim.sides:
+		if s.id == player_side or s.pending.is_empty() or BattleSim.is_guard(s.special):
+			continue
+		var pd: Dictionary = s.pending
+		if int(pd.get("lane", -1)) < 0 or (p.y >= float(pd.y0) - 2.0 and p.y <= float(pd.y1) + 2.0):
+			threat = true
+	if not threat:
+		return
+	var blink := 0.5 + 0.5 * sin(_clock * 14.0)
+	var col := Color(DANGER, 0.5 + 0.5 * blink)
+	var y := clampf(p.y - cam.y, 30.0, 120.0)
+	var d := -1.0 if sx < 0.0 else 1.0
+	var tip := Vector2(3.0 if d < 0.0 else SCREEN.x - 3.0, y)
+	draw_colored_polygon(PackedVector2Array([tip, tip + Vector2(-d * 9.0, -6.0), tip + Vector2(-d * 9.0, 6.0)]), col)
+	var font := ThemeDB.fallback_font
+	var text := "แม่ทัพ!"
+	var tw := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, 8).x
+	var tx := tip.x + 12.0 if d < 0.0 else tip.x - 12.0 - tw
+	draw_string(font, Vector2(tx, y + 3.0), text, HORIZONTAL_ALIGNMENT_LEFT, -1, 8, col)
 
 
 func _pos(u) -> Vector2:

@@ -241,6 +241,9 @@ func _process(delta: float) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if _camera_input(event):
+		get_viewport().set_input_as_handled()
+		return
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT:
 		_toggle_menu()
 		get_viewport().set_input_as_handled()
@@ -328,6 +331,41 @@ func _unhandled_input(event: InputEvent) -> void:
 				_start_fight()
 			elif phase == "over":
 				_back_to_setup()
+
+
+## Camera control (see BattleView, "player camera control"): wheel / trackpad
+## pan, middle click = back to AUTO, left click on the radar = jump there,
+## [V] = cycle what the camera follows. [,] [.] are polled in BattleView.
+## Returns true if the event was used.
+const CAM_WHEEL_STEP := 24.0
+const CAM_GESTURE_GAIN := 6.0
+
+func _camera_input(event: InputEvent) -> bool:
+	if sim == null or (phase == "fight" and sim.phase in ["offer", "duel"]):
+		return false
+	if event is InputEventMouseButton and event.pressed:
+		match event.button_index:
+			MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_LEFT:
+				view.pan_camera(-CAM_WHEEL_STEP * maxf(1.0, event.factor))
+				return true
+			MOUSE_BUTTON_WHEEL_DOWN, MOUSE_BUTTON_WHEEL_RIGHT:
+				view.pan_camera(CAM_WHEEL_STEP * maxf(1.0, event.factor))
+				return true
+			MOUSE_BUTTON_MIDDLE:
+				view.camera_to_auto()
+				return true
+			MOUSE_BUTTON_LEFT:
+				return view.radar_click(view.get_local_mouse_position() - view.cam)
+	if event is InputEventPanGesture:  # Mac trackpad two-finger swipe
+		if absf(event.delta.x) > absf(event.delta.y) * 0.5:
+			view.pan_camera(event.delta.x * CAM_GESTURE_GAIN)
+			return true
+	if event is InputEventKey and event.pressed and not event.echo:
+		var k: int = event.physical_keycode if event.physical_keycode != 0 else event.keycode
+		if k == KEY_V:
+			view.cycle_camera_mode()
+			return true
+	return false
 
 
 # --- phases ------------------------------------------------------------------
