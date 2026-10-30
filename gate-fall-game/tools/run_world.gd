@@ -32,6 +32,9 @@ func _init() -> void:
 	var walls := 0  # wall levels raised
 	var engines := 0  # engines built
 	var sieges := 0  # castle battles where walls counted (after engines)
+	var level_ups := 0
+	var promotions := 0
+	var top_level := 0  # highest general level at the end of a war
 	var t0 := Time.get_ticks_msec()
 	for r in runs:
 		var seed_value := 1000 + r * 31
@@ -42,6 +45,7 @@ func _init() -> void:
 				joined += 1 if e.type == "recruited" else 0
 				walls += 1 if e.type == "fortify" else 0
 				engines += 1 if e.type == "engine" else 0
+				promotions += 1 if e.type == "promote" else 0
 				if log_first and r == 0:
 					print(_line(w, e))
 			for b in w.battles.duplicate():
@@ -53,17 +57,20 @@ func _init() -> void:
 				seed_value += 1
 				fights += 1
 				if log_first and r == 0:
-					print("  day %.1f battle %s(%d) vs %s(%d) at %s%s -> %s left %s" % [w.day, a.name, a.troops,
-							d.name, d.troops, w.castles[b.castle].name if b.castle != "" else "road",
+					print("  day %.1f battle %s(Lv%d %d) vs %s(Lv%d %d) at %s%s -> %s left %s" % [w.day, a.name, a.level,
+							a.troops, d.name, d.level, d.troops, w.castles[b.castle].name if b.castle != "" else "road",
 							" wall %d%s" % [si.wall, " engine->%d" % si.used if si.engine else ""] if si.castle else "",
 							res.winner, res.left])
 				w.resolve_battle(int(b.id), res.winner, res.left, res.fell)
 				for e in w._take_events():
 					taken += 1 if e.type == "captured" else 0
 					joined += 1 if e.type == "recruited" else 0
+					level_ups += 1 if e.type == "level_up" else 0
 					if log_first and r == 0:
 						print(_line(w, e))
 		wins[w.winner] += 1
+		for g in w.generals:
+			top_level = maxi(top_level, g.level)
 		days += w.day
 		print("war %d: winner %s day %.0f castles S%d K%d councils %d" % [r, w.winner if w.winner != "" else "-",
 				w.day, w.castles_of("S").size(), w.castles_of("K").size(), w.councils_held])
@@ -72,6 +79,8 @@ func _init() -> void:
 	print("prisoners taken %.1f/war · joined %.1f/war" % [float(taken) / runs, float(joined) / runs])
 	print("walls raised %.1f/war · engines built %.1f/war · battles behind walls %.1f/war" % [float(walls) / runs,
 			float(engines) / runs, float(sieges) / runs])
+	print("level ups %.1f/war · promotions %.1f/war · highest level %d" % [float(level_ups) / runs,
+			float(promotions) / runs, top_level])
 	quit()
 
 
@@ -106,6 +115,10 @@ func _line(w: WorldSim, e: Dictionary) -> String:
 			return "day %.1f   %s's engine is spent at %s" % [w.day, who, at]
 		"engine_lost":
 			return "day %.1f   %s's engine is burnt on the road" % [w.day, who]
+		"level_up":
+			return "day %.1f   %s reaches level %d" % [w.day, who, e.level]
+		"promote":
+			return "day %.1f   %s promoted to %s (max %d troops)" % [w.day, who, w.rank_name(g), w.max_troops_of(g)]
 		"over":
 			return "day %.1f WAR OVER: %s" % [w.day, e.winner]
 	return "day %.1f %s %s %s" % [w.day, e.type, who, at]

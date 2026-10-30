@@ -341,7 +341,7 @@ func _command_lines(f: Dictionary) -> PackedStringArray:
 		"disperse":
 			out.append("[E] แตกปีกขึ้นบน-ล่าง / รวมกลับ")
 		"raid":
-			out.append("[E] กองจู่โจมอ้อมขอบสนามไปตีแม่ทัพ")
+			out.append("อ้อมไปตีแม่ทัพทันที · [E] เรียกกลับ")
 		"divrush":
 			out.append("[E] ส่งกองรบเข้าทีละกอง")
 	var guard := float(f.get("guard_share", 0)) > 0.0

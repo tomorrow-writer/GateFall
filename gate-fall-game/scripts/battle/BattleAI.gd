@@ -44,8 +44,9 @@
 ##   moves); call them back when ours fall below guard_recall_adv x theirs.
 ##
 ## Counter-raid (checked every step with dodging): an enemy raid on the way
-##   -> order retreat (troops head home to the general), and back to the old
-##   order once raiders reach within counter_raid_near px of our general.
+##   while we HOLD -> order retreat (troops head home to the general), and back
+##   to hold once raiders reach within counter_raid_near px of our general.
+##   A charging army keeps fighting (only guards on duty defend the general).
 ## Formation command (key E for the player, every think_interval s):
 ##   disperse: used as a dodge (see Dodging): a special down the middle lane
 ##     only -> split to the top / bottom lanes, regroup once it is over.
@@ -427,7 +428,8 @@ func _think_dodge(sim, s) -> void:
 
 ## An enemy raid on its way to our general: fall back (order retreat) so our
 ## troops get home in time, then turn on the raiders once they are at our
-## general (back to the old order). Guards on duty make it unnecessary.
+## general (back to the old order). Guards on duty make it unnecessary, and
+## only a holding army falls back: one that is charging keeps fighting.
 func _think_counter_raid(sim, s) -> void:
 	var g = sim.general_of(side_id)
 	if g == null or not g.alive:
@@ -444,6 +446,8 @@ func _think_counter_raid(sim, s) -> void:
 		return
 	if s.squads and not s.guard_out:
 		return
+	if _counter_restore == "" and s.order_name != "hold":
+		return  # charging: the troops keep fighting, they don't run home
 	for u in sim.units:
 		if u.alive and u.side != s and u.group == 2 and not u.running \
 				and absf(u.x - g.x) < float(tuning.counter_raid_near) and absf(u.y - g.y) < float(tuning.counter_raid_near):
