@@ -1096,3 +1096,95 @@ func _ai_promote(side: String) -> void:
 			best = g
 	if best != null:
 		promote(best)
+
+
+# --- save / load (pause menu, like DF) ---------------------------------------------
+# The whole war as plain JSON-safe values: castles (owner, wall), every general,
+# the clock, council state, queued battles and the dice. Map layout and rules
+# are NOT saved: they come from world_map.json when the save is loaded, so a
+# save keeps working after numbers in the json are tuned.
+
+const SAVE_VERSION := 1
+
+
+func to_save() -> Dictionary:
+	var cs := {}
+	for cid in castles:
+		cs[cid] = {"owner": castles[cid].owner, "wall": int(castles[cid].wall)}
+	var gs := []
+	for g in generals:
+		gs.append({"id": g.id, "name": g.name, "side": g.side, "king": g.king, "troops": g.troops,
+				"castle": g.castle, "pos": [g.pos.x, g.pos.y], "from": g.from, "home": g.home,
+				"path": g.path.duplicate(), "state": g.state, "retreating": g.retreating,
+				"origin": g.origin, "loyalty": g.loyalty, "held_by": g.held_by,
+				"captive_councils": g.captive_councils, "engine": g.engine, "level": g.level,
+				"xp": g.xp, "rank": g.rank})
+	return {"version": SAVE_VERSION, "day": day, "ai_sides": ai_sides.duplicate(), "winner": winner,
+			"castles": cs, "generals": gs, "battles": battles.duplicate(true),
+			"reserve": reserve.duplicate(), "council": council.duplicate(),
+			"councils_held": councils_held, "next_council": -1.0 if next_council == INF else next_council,
+			"fortified": fortified.duplicate(), "acted": acted.duplicate(), "promoted": promoted.duplicate(),
+			"tried": tried.duplicate(), "council_open": _council_open, "next_battle": _next_battle,
+			"ai_acc": _ai_acc, "rng_seed": str(rng.seed), "rng_state": str(rng.state)}
+
+
+## Put a to_save() dictionary back on a WorldSim made from the same map json.
+## JSON turns every number into a float, so each field is cast back here.
+## Castles / generals missing from the save keep their starting values.
+func apply_save(s: Dictionary) -> bool:
+	if int(s.get("version", 0)) != SAVE_VERSION:
+		return false
+	day = float(s.day)
+	ai_sides = Array(s.get("ai_sides", ai_sides))
+	winner = str(s.get("winner", ""))
+	var cs: Dictionary = s.get("castles", {})
+	for cid in cs:
+		if castles.has(cid):
+			castles[cid].owner = str(cs[cid].owner)
+			castles[cid].wall = clampi(int(cs[cid].wall), 0, wall_max())
+	for gd in s.get("generals", []):
+		var g := get_general(str(gd.id))
+		if g == null:
+			continue
+		g.side = str(gd.side)
+		g.king = bool(gd.king)
+		g.troops = float(gd.troops)
+		g.castle = str(gd.castle)
+		g.pos = Vector2(float(gd.pos[0]), float(gd.pos[1]))
+		g.from = str(gd.from)
+		g.home = str(gd.home)
+		g.path = []
+		for c in gd.path:
+			g.path.append(str(c))
+		g.state = str(gd.state)
+		g.retreating = bool(gd.retreating)
+		g.origin = str(gd.origin)
+		g.loyalty = int(gd.loyalty)
+		g.held_by = str(gd.held_by)
+		g.captive_councils = int(gd.captive_councils)
+		g.engine = bool(gd.engine)
+		g.level = clampi(int(gd.level), 1, max_level())
+		g.xp = float(gd.xp)
+		g.rank = clampi(int(gd.rank), 0, maxi(0, rank_count() - 1))
+	battles = []
+	for b in s.get("battles", []):
+		battles.append({"id": int(b.id), "a": str(b.a), "d": str(b.d), "castle": str(b.castle),
+				"engine": bool(b.get("engine", false))})
+	for side in s.get("reserve", {}):
+		reserve[side] = int(s.reserve[side])
+	council = Array(s.get("council", []))
+	councils_held = int(s.get("councils_held", 0))
+	var nc := float(s.get("next_council", -1.0))
+	next_council = INF if nc < 0.0 else nc
+	fortified = s.get("fortified", {})
+	acted = s.get("acted", {})
+	promoted = s.get("promoted", {})
+	tried = s.get("tried", {})
+	_council_open = bool(s.get("council_open", false))
+	_next_battle = int(s.get("next_battle", 1))
+	_ai_acc = float(s.get("ai_acc", 0.0))
+	if s.has("rng_seed"):
+		rng.seed = int(str(s.rng_seed))
+		rng.state = int(str(s.rng_state))
+	_events = []
+	return true

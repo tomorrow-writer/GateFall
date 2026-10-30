@@ -12,8 +12,14 @@
 ##     there (click again = the next one) · right-click = deselect
 ## Keys:
 ##   Space = pause / go on · 1 / 2 / 3 = speed ×1 / ×2 / ×4
-##   Tab = next of your generals · Esc = deselect
+##   Tab = next of your generals · Esc = deselect (nothing selected = pause menu)
 ##   when a battle starts: Enter = fight it yourself · A = auto-resolve
+##
+## Pause menu (like DF's Start menu): Esc, or click the speed label on the top
+## bar. Time stops while it is open. Resume · save (3 slots, Campaign) · load ·
+## options (Settings autoload: map speed, battle speed, volume, full screen) ·
+## back to the title. A filled save slot, a load during a war and leaving the
+## war each ask for a second click. The title screen has "load game" too.
 ##
 ## Marching armies are drawn with the battle sprite of their troops (a slime
 ## army walks as slimes, a human army as knights), with a ring in the side
@@ -42,7 +48,7 @@ const DIM := Color(0.75, 0.73, 0.68)
 const ALERT := Color("ff7a5a")
 const TOP_BAR := Rect2(0, 0, 320, 12)
 const BOTTOM_BAR := Rect2(0, 154, 320, 26)
-const PAUSE_HIT := Rect2(194, 0, 46, 12)  # "หยุด [Space]" / "×1" on the top bar: click = pause / go on
+const PAUSE_HIT := Rect2(194, 0, 46, 12)  # "×1 · Esc เมนู" on the top bar: click = pause menu
 
 var world: WorldSim = null
 var data: Dictionary
@@ -64,9 +70,13 @@ var _map_sprites := {}  # sprite id -> {anims: {name: {tex, frames, fps}}, w, h,
 var _facing := {}  # general id -> -1 (left) / 1 (right): kept while it stands to fight
 var _in_council := false  # the council window is open (the popup is the council)
 var _council_target := ""  # prisoner id the "ชวน" buttons in the council aim at
+var _menu := ""  # pause menu page open in the popup: "" | main | save | load | options
+var _menu_note := ""  # one line under the menu title ("บันทึกช่อง 1 แล้ว")
+var _confirm := ""  # button waiting for its second click ("save1", "load2", "title")
 
 
 func _ready() -> void:
+	Engine.time_scale = 1.0  # the battle scene may have run faster (Settings.battle_speed)
 	_ui = CanvasLayer.new()
 	_ui.layer = 5
 	add_child(_ui)
@@ -75,6 +85,7 @@ func _ready() -> void:
 	if Campaign.world == null:
 		data = WorldSim.load_map(Campaign.MAP_DATA)
 		side_cfg = data.sides
+		speed_i = _clamp_speed(Settings.map_speed)
 		_make_decor()
 		_show_title()
 		return
@@ -127,7 +138,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			return
 		var p := get_local_mouse_position()
 		if event.button_index == MOUSE_BUTTON_LEFT and PAUSE_HIT.has_point(p):
-			paused = not paused
+			_show_menu("main")
 			return
 		if event.button_index == MOUSE_BUTTON_RIGHT:
 			selected = ""
@@ -151,6 +162,9 @@ func _unhandled_input(event: InputEvent) -> void:
 					_end_council()
 				KEY_F:
 					_council_auto()
+		elif _menu != "":
+			if k == KEY_ESCAPE:
+				_menu_back()
 		elif world.winner != "" and k in [KEY_ENTER, KEY_KP_ENTER]:
 			_restart()
 		return
@@ -158,15 +172,18 @@ func _unhandled_input(event: InputEvent) -> void:
 		KEY_SPACE:
 			paused = not paused
 		KEY_1:
-			speed_i = 0
+			_set_speed(0)
 		KEY_2:
-			speed_i = mini(1, data.time.speeds.size() - 1)
+			_set_speed(1)
 		KEY_3:
-			speed_i = data.time.speeds.size() - 1
+			_set_speed(data.time.speeds.size() - 1)
 		KEY_TAB:
 			_select_next()
 		KEY_ESCAPE:
-			selected = ""
+			if selected != "":
+				selected = ""
+			else:
+				_show_menu("main")
 
 
 func _click(p: Vector2) -> void:
@@ -408,6 +425,205 @@ func _close_popup() -> void:
 	_popup = null
 	_popup_battle = -1
 	_in_council = false
+	_menu = ""
+	_confirm = ""
+
+
+# --- pause menu (like DF's Start menu) -------------------------------------------------
+# Lives in the popup slot, so the map clock stops while it is open (_process
+# only steps the world with no popup). Pages: main / save / load / options.
+
+func _show_menu(page: String) -> void:
+	if page != "load" and world == null:
+		return
+	if _popup != null and _menu == "" and world != null:
+		return  # a battle / council / end window is up: it comes first
+	var note := _menu_note if page == "main" or page == _menu else ""
+	var keep_confirm := _confirm if page == _menu else ""
+	_close_popup()
+	_menu = page
+	_menu_note = note
+	_confirm = keep_confirm
+	var rows: Array = []  # [text, callable, enabled]
+	var title := ""
+	match page:
+		"main":
+			title = "หยุดเกม · วันที่ %d" % (int(world.day) + 1)
+			rows = [["เล่นต่อ [Esc]", _close_menu, true],
+					["บันทึก", _show_menu.bind("save"), Campaign.world != null],
+					["โหลด", _show_menu.bind("load"), true],
+					["ตั้งค่า", _show_menu.bind("options"), true],
+					["กลับหน้าแรก? กดอีกครั้ง (ที่ไม่ได้บันทึกจะหาย)" if _confirm == "title" else "กลับหน้าแรก",
+					_menu_title, true]]
+		"save", "load":
+			title = "บันทึกเกม · เลือกช่อง" if page == "save" else "โหลดเกม · เลือกช่อง"
+			for n in range(1, Campaign.SLOTS + 1):
+				var info := Campaign.slot_info(n)
+				var t := "ช่อง %d · %s" % [n, _slot_text(info)]
+				if _confirm == "%s%d" % [page, n]:
+					t = ("เขียนทับช่อง %d? กดอีกครั้ง" if page == "save" else "โหลดช่อง %d? ที่ไม่ได้บันทึกจะหาย · กดอีกครั้ง") % n
+				var cb := _menu_save.bind(n) if page == "save" else _menu_load.bind(n)
+				rows.append([t, cb, page == "save" or not info.is_empty()])
+			rows.append(["กลับ [Esc]", _menu_back, true])
+		"options":
+			title = "ตั้งค่า"
+			var speeds: Array = data.time.speeds
+			rows = [["ความเร็วแผนที่ ×%d" % int(speeds[speed_i]), _opt_map_speed, true],
+					["ความเร็วฉากรบ ×%s" % _num(Settings.battle_speed()), _opt_battle_speed, true],
+					["เสียง − (%d/%d)" % [Settings.volume, Settings.VOLUME_MAX], _opt_volume.bind(-1), Settings.volume > 0],
+					["เสียง + (%d/%d)" % [Settings.volume, Settings.VOLUME_MAX], _opt_volume.bind(1),
+					Settings.volume < Settings.VOLUME_MAX],
+					["จอ: " + ("เต็มจอ" if Settings.fullscreen else "หน้าต่าง"), _opt_fullscreen, true],
+					["กลับ [Esc]", _menu_back, true]]
+	_popup = _menu_panel(title, _menu_note, rows)
+
+
+func _menu_panel(title: String, note: String, rows: Array) -> PanelContainer:
+	var panel := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.05, 0.06, 0.11, 0.94)
+	sb.border_color = TRIM_HI
+	sb.set_border_width_all(1)
+	sb.set_content_margin_all(6)
+	panel.add_theme_stylebox_override("panel", sb)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 2)
+	panel.add_child(box)
+	var t := Label.new()
+	t.text = title
+	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	t.add_theme_font_size_override("font_size", 10)
+	t.add_theme_color_override("font_color", TRIM_HI)
+	box.add_child(t)
+	if note != "":
+		var l := Label.new()
+		l.text = note
+		l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		l.add_theme_font_size_override("font_size", 7)
+		l.add_theme_color_override("font_color", TEXT)
+		box.add_child(l)
+	for r in rows:
+		var b := Button.new()
+		b.text = r[0]
+		b.focus_mode = Control.FOCUS_NONE
+		b.custom_minimum_size = Vector2(150, 0)
+		b.add_theme_font_size_override("font_size", 8)
+		b.disabled = not r[2]
+		b.pressed.connect(r[1])
+		box.add_child(b)
+	_ui.add_child(panel)
+	panel.reset_size()
+	panel.position = ((SCREEN - panel.size) / 2.0).round()
+	return panel
+
+
+func _slot_text(info: Dictionary) -> String:
+	if info.is_empty():
+		return "ว่าง"
+	var side := str(info.get("side", ""))
+	var label: String = side_cfg[side].label if side_cfg.has(side) else side
+	var tm := str(info.get("time", ""))  # "2026-10-30 16:20:11"
+	var when := "%s/%s %s" % [tm.substr(8, 2), tm.substr(5, 2), tm.substr(11, 5)] if tm.length() >= 16 else tm
+	return "%s · วันที่ %d · %s" % [label, int(info.get("day", 0)), when]
+
+
+func _close_menu() -> void:
+	_menu_note = ""
+	_close_popup()
+
+
+## Esc / "กลับ": a sub page goes back to the main page, the main page closes.
+## On the title screen (no war) the load page goes back to the title.
+func _menu_back() -> void:
+	_confirm = ""
+	_menu_note = ""
+	if world == null:
+		_show_title()
+	elif _menu == "main":
+		_close_menu()
+	else:
+		_show_menu("main")
+
+
+func _menu_save(n: int) -> void:
+	if not Campaign.slot_info(n).is_empty() and _confirm != "save%d" % n:
+		_confirm = "save%d" % n
+		_show_menu("save")
+		return
+	_confirm = ""
+	Campaign.map_selected = selected
+	if Campaign.save_game(n):
+		_menu_note = "บันทึกช่อง %d แล้ว" % n
+		_log("บันทึกเกมช่อง %d" % n)
+	else:
+		_menu_note = "บันทึกไม่สำเร็จ"
+	_show_menu("main")
+
+
+func _menu_load(n: int) -> void:
+	if world != null and _confirm != "load%d" % n:
+		_confirm = "load%d" % n
+		_show_menu("load")
+		return
+	_confirm = ""
+	if not Campaign.load_game(n):
+		_menu_note = "โหลดช่อง %d ไม่สำเร็จ" % n
+		_show_menu("load")
+		return
+	_close_menu()
+	log_lines.clear()
+	_facing.clear()
+	_bind(Campaign.world)
+	selected = Campaign.map_selected
+	var g := world.get_general(selected)
+	if g == null or g.side != Campaign.player_side or g.state == "captured":
+		selected = ""
+	speed_i = _clamp_speed(Settings.map_speed)
+	paused = true  # look first, then Space
+	_log("โหลดช่อง %d · วันที่ %d · กด Space เดินเวลา" % [n, int(world.day) + 1])
+	_check_battles()
+
+
+func _menu_title() -> void:
+	if _confirm != "title":
+		_confirm = "title"
+		_show_menu("main")
+		return
+	_close_menu()
+	_restart()
+
+
+func _opt_map_speed() -> void:
+	_set_speed((speed_i + 1) % data.time.speeds.size())
+	_show_menu("options")
+
+
+func _opt_battle_speed() -> void:
+	Settings.cycle_battle_speed()
+	_show_menu("options")
+
+
+func _opt_volume(d: int) -> void:
+	Settings.add_volume(d)
+	_show_menu("options")
+
+
+func _opt_fullscreen() -> void:
+	Settings.toggle_fullscreen()
+	_show_menu("options")
+
+
+func _set_speed(i: int) -> void:
+	speed_i = _clamp_speed(i)
+	Settings.set_map_speed(speed_i)
+
+
+func _clamp_speed(i: int) -> int:
+	return clampi(i, 0, data.time.speeds.size() - 1) if not data.is_empty() else 0
+
+
+func _num(v: float) -> String:
+	return str(int(v)) if is_equal_approx(v, roundf(v)) else "%.1f" % v
 
 
 # --- council (every council.every_days, like DF) ------------------------------------
@@ -652,7 +868,7 @@ func _show_title() -> void:
 	_popup = _make_popup("Gatefall · เลือกฝั่ง",
 			"ประตูต่างมิติเปิดขึ้นทั่วโลก\nยึดปราสาทหลวงของฝ่ายตรงข้ามเพื่อชนะสงคราม",
 			[["สไลม์ (ผู้รุกราน)", _start.bind("S")], ["มนุษย์ (ผู้ปกป้อง)", _start.bind("K")],
-			["ทดสอบฉากรบ", Campaign.test_battle]])
+			["โหลดเกม", _show_menu.bind("load")], ["ทดสอบฉากรบ", Campaign.test_battle]])
 
 
 func _start(side: String) -> void:
@@ -661,6 +877,7 @@ func _start(side: String) -> void:
 	selected = ""
 	log_lines.clear()
 	_bind(Campaign.world)
+	speed_i = _clamp_speed(Settings.map_speed)
 	paused = false
 	_log("เริ่มสงคราม: คลิกแม่ทัพ แล้วคลิกปราสาทที่จะไป")
 
@@ -1056,7 +1273,7 @@ func _draw_top(font: Font) -> void:
 	var speeds: Array = data.time.speeds
 	var clock := "วันที่ %d" % (int(world.day) + 1)
 	_text(font, clock, Vector2(160, 9), 8, TRIM_HI, true)
-	var state := "หยุด [Space]" if paused else "×%d [Space หยุด]" % int(speeds[speed_i])
+	var state := ("หยุด" if paused else "×%d" % int(speeds[speed_i])) + " · Esc เมนู"
 	_text(font, state, Vector2(200, 9), 6, ALERT if paused else DIM, false)
 	var x := 3.0
 	for side in ["S", "K"]:
@@ -1133,7 +1350,7 @@ func _draw_bottom(font: Font) -> void:
 		var l: String = log_lines[-1]
 		_text(font, l, Vector2(3, y), 6, ALERT if l.begins_with("!") else TEXT, false)
 	else:
-		_text(font, "เลือกแม่ทัพจากแถบนี้ แล้วคลิกปราสาทที่จะไป · Space หยุดเวลา", Vector2(3, y), 6, DIM, false)
+		_text(font, "เลือกแม่ทัพจากแถบนี้ แล้วคลิกปราสาทที่จะไป · Space หยุดเวลา · Esc เมนู", Vector2(3, y), 6, DIM, false)
 	if hover_castle != "":
 		_draw_castle_tip(font, hover_castle)
 
