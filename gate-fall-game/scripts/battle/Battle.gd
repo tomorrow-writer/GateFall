@@ -420,13 +420,17 @@ func _new_sim() -> void:
 				overrides[id]["units"] = opt.units
 	if _campaign != null:
 		var troops: Dictionary = _campaign.battle.troops
-		for sd in cfg.sides:
-			overrides[sd.id]["units"] = [[sd.unit, int(troops.get(sd.id, sd.count))]]
-		# Castle walls (WorldSim.battle_mods): {side: {"wall_take": x}}.
+		# Castle walls, general level, troop type (WorldSim.battle_mods):
+		# {side: {"wall_take": x, "unit": id, ...}}.
 		var mods: Dictionary = _campaign.battle.get("mods", {})
+		for sd in cfg.sides:
+			var unit := str(mods.get(sd.id, {}).get("unit", sd.unit))
+			overrides[sd.id]["units"] = [[unit, int(troops.get(sd.id, sd.count))]]
 		for id in mods:
 			if overrides.has(id):
-				overrides[id].merge(mods[id], true)
+				var m: Dictionary = mods[id].duplicate()
+				m.erase("unit")
+				overrides[id].merge(m, true)
 	sim = BattleSim.new(cfg, overrides, BattleRng.new(_seed))
 	view.bind(sim)
 	hud.sim = sim

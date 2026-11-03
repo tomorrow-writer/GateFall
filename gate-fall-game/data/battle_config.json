@@ -397,17 +397,17 @@
     ]
   },
 
-  "_troop_types_note": "Troop types each race can field (feature/troop-types, Art 2026-10-30): a general picks only from its own race's list (its origin, not the side it serves), and only types whose rank (index into world_map ranks: 0 นายกอง, 1 นายพัน, 2 แม่ทัพ, 3 จอมพล) it has reached. Switching type is one council order. label / desc are what the council screen shows; stats live in units.",
+  "_troop_types_note": "Troop types each race can field (feature/troop-types, Art 2026-10-30): a general picks only from its own race's list (its origin, not the side it serves), and only types whose rank (index into world_map ranks: 0 นายกอง, 1 นายพัน, 2 แม่ทัพ, 3 จอมพล) it has reached. Switching type is one council order. label / desc / pips (attack, toughness, range, speed on a 1-5 scale, display only) are what the council screen shows; real stats live in units.",
   "troop_types": {
     "slime": [
-      { "unit": "slime_big", "label": "สไลม์ใหญ่", "rank": 0, "desc": "ตีใกล้ · ตายแล้วแตกเป็นสไลม์เล็ก 2 ตัว" },
-      { "unit": "slime_mage", "label": "สไลม์เวท", "rank": 1, "desc": "ยิงไกล · ยิงทหารเดินเท้าได้ดี แต่โดนประชิดแล้วเปราะ" },
-      { "unit": "slime_hopper", "label": "สไลม์กระโดด", "rank": 2, "desc": "เร็ว · ไล่ฆ่าพวกยิงไกล แต่แพ้ทหารหอก" }
+      { "unit": "slime_big", "label": "สไลม์ใหญ่", "rank": 0, "pips": [3, 3, 1, 2], "desc": "ตีใกล้ · ตายแล้วแตกเป็นสไลม์เล็ก 2 ตัว" },
+      { "unit": "slime_mage", "label": "สไลม์เวท", "rank": 1, "pips": [3, 1, 4, 2], "desc": "ยิงไกล · ยิงทหารเดินเท้าได้ดี แต่โดนประชิดแล้วเปราะ" },
+      { "unit": "slime_hopper", "label": "สไลม์กระโดด", "rank": 2, "pips": [3, 1, 1, 5], "desc": "เร็ว · ไล่ฆ่าพวกยิงไกล แต่แพ้ทหารหอก" }
     ],
     "human": [
-      { "unit": "knight", "label": "ทหารหอก", "rank": 0, "desc": "ตีใกล้ · ยืนแนวหน้า ตั้งหอกรับทหารม้า" },
-      { "unit": "archer", "label": "พลธนู", "rank": 1, "desc": "ยิงไกล · ยิงทหารเดินเท้าได้ดี แต่โดนประชิดแล้วเปราะ" },
-      { "unit": "cavalry", "label": "ทหารม้า", "rank": 2, "desc": "เร็ว ตีแรง · ไล่ฆ่าพวกยิงไกล แต่แพ้ทหารหอก" }
+      { "unit": "knight", "label": "ทหารหอก", "rank": 0, "pips": [3, 4, 1, 2], "desc": "ตีใกล้ · ยืนแนวหน้า ตั้งหอกรับทหารม้า" },
+      { "unit": "archer", "label": "พลธนู", "rank": 1, "pips": [3, 1, 4, 2], "desc": "ยิงไกล · ยิงทหารเดินเท้าได้ดี แต่โดนประชิดแล้วเปราะ" },
+      { "unit": "cavalry", "label": "ทหารม้า", "rank": 2, "pips": [4, 2, 1, 5], "desc": "เร็ว ตีแรง · ไล่ฆ่าพวกยิงไกล แต่แพ้ทหารหอก" }
     ]
   },
 

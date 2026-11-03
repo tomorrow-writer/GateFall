@@ -32,6 +32,7 @@ extends Node2D
 const WorldSim = preload("res://scripts/world/WorldSim.gd")
 const AutoBattle = preload("res://scripts/world/AutoBattle.gd")
 const BattleSim = preload("res://scripts/battle/BattleSim.gd")
+const CouncilScreen = preload("res://scripts/world/CouncilScreen.gd")
 
 const SCREEN := Vector2(320, 180)
 const SEA := Color("1d3a4a")
@@ -64,12 +65,14 @@ var _clock := 0.0
 var _decor: Array = []  # [pos, kind] map texture (trees / hills), made once
 var _battle_cfg: Dictionary
 var _ui: CanvasLayer
-var _popup: PanelContainer = null
+var _popup: Control = null  # the open window (battle / council / menu / title); the council is a full screen
 var _popup_battle := -1
 var _map_sprites := {}  # sprite id -> {anims: {name: {tex, frames, fps}}, w, h, foot, height}
 var _facing := {}  # general id -> -1 (left) / 1 (right): kept while it stands to fight
 var _in_council := false  # the council window is open (the popup is the council)
 var _council_target := ""  # prisoner id the "ชวน" buttons in the council aim at
+var _council_sel := ""  # general selected on the council screen
+var _council_warn := ""  # one-off line on the council screen ("ต้องเลื่อนเป็น…")
 var _menu := ""  # pause menu page open in the popup: "" | main | save | load | options
 var _menu_note := ""  # one line under the menu title ("บันทึกช่อง 1 แล้ว")
 var _confirm := ""  # button waiting for its second click ("save1", "load2", "title")
@@ -647,152 +650,33 @@ func _show_council() -> void:
 				break
 		if _council_target == "" and not prisoners.is_empty():
 			_council_target = prisoners[0].id
-	target = world.get_general(_council_target)
-	var panel := PanelContainer.new()
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.05, 0.06, 0.11, 0.95)
-	sb.border_color = TRIM_HI
-	sb.set_border_width_all(1)
-	sb.set_content_margin_all(5)
-	panel.add_theme_stylebox_override("panel", sb)
-	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 2)
-	panel.add_child(box)
-	_council_label(box, "ประชุมทัพ ครั้งที่ %d · วันที่ %d" % [world.councils_held, int(world.day) + 1], 9, TRIM_HI,
-			true)
-	var n_castles := world.castles_of(side).size()
-	_council_label(box, "คลังทหาร %d   (เดือนนี้ได้ +%d จาก %d ปราสาท)" % [int(world.reserve[side]),
-			world.income_of(side), n_castles], 8, TEXT, true)
-	var grid := GridContainer.new()
-	grid.columns = 7
-	grid.add_theme_constant_override("h_separation", 4)
-	grid.add_theme_constant_override("v_separation", 2)
-	box.add_child(grid)
-	var step := int(world.council_cfg.get("step", 5))
-	for g in world.generals_of(side):
-		var ok := world.can_draft(g)
-		var cap := world.max_troops_of(g)
-		_council_label(grid, "%s%s Lv%d" % ["★" if g.king else "", g.name, g.level], 7, TEXT if ok else DIM, false)
-		var where: String = world.castles[g.castle].name if ok else ("เดินทาง" if g.state == "moving" else
-				("กำลังรบ" if g.state == "battle" else "นอกปราสาท"))
-		if ok and int(world.castles[g.castle].wall) > 0:
-			where += " ก.%d" % int(world.castles[g.castle].wall)  # wall level ("Lv" is the general's)
-		_council_label(grid, where, 7, DIM, false)
-		_council_label(grid, "%d/%d%s" % [int(g.troops), cap, " +ตี" if g.engine else ""], 7, TEXT if ok else DIM,
-				false)
-		_council_button(grid, "−%d" % step, _council_draft.bind(g.id, -step), ok and g.troops >= 1)
-		_council_button(grid, "+%d" % step, _council_draft.bind(g.id, step),
-				ok and g.troops < cap and int(world.reserve[side]) > 0)
-		_council_button(grid, "เต็ม", _council_draft.bind(g.id, cap),
-				ok and g.troops < cap and int(world.reserve[side]) > 0)
-		_council_action_cell(grid, g, target)
-	# Prisoners we hold: click one to aim the "ชวน" buttons at it.
-	if not prisoners.is_empty():
-		var prow := HBoxContainer.new()
-		prow.alignment = BoxContainer.ALIGNMENT_CENTER
-		prow.add_theme_constant_override("separation", 3)
-		box.add_child(prow)
-		_council_label(prow, "เชลย:", 7, TRIM_HI, false)
-		for p in prisoners:
-			var t := ("▶" if p.id == _council_target else "") + ("★" if p.king else "") + p.name
-			if p.king:
-				t += " (ไม่ยอม)"
-			elif world.tried.has(p.id):
-				t += " (ลองแล้ว)"
-			_council_button(prow, t, _council_pick.bind(p.id), not p.king)
-	# Promotions: the king's one action this council, for any general of ours
-	# whose level reached the next rank.
-	var can_rise := []
-	for g in world.generals_of(side):
-		var need := world.next_rank_level(g)
-		if not g.king and need > 0 and g.level >= need:
-			can_rise.append(g)
-	if not can_rise.is_empty():
-		var rrow := HBoxContainer.new()
-		rrow.alignment = BoxContainer.ALIGNMENT_CENTER
-		rrow.add_theme_constant_override("separation", 3)
-		box.add_child(rrow)
-		_council_label(rrow, "เลื่อนยศ (คำสั่งกษัตริย์):", 7, TRIM_HI, false)
-		var names: Array = world.rank_cfg.get("names", [])
-		var caps: Array = world.rank_cfg.get("max_troops", [])
-		for g in can_rise:
-			var t := "%s→%s %d" % [g.name, str(names[g.rank + 1]) if g.rank + 1 < names.size() else "?",
-					int(caps[g.rank + 1]) if g.rank + 1 < caps.size() else 0]
-			_council_button(rrow, t, _council_promote.bind(g.id), world.can_promote(g))
-	var taken := PackedStringArray()
-	for p in world.prisoners_of(WorldSim.other_side(side)):
-		taken.append(p.name)
-	if not taken.is_empty():
-		_council_label(box, "แม่ทัพเราที่ถูกจับ: " + ", ".join(taken), 7, ALERT, true)
-	_council_label(box, "แม่ทัพในปราสาทเรา: แจกทหารได้ · สั่งงานได้คนละ 1 อย่าง", 7, DIM, true)
-	var row := HBoxContainer.new()
-	row.alignment = BoxContainer.ALIGNMENT_CENTER
-	row.add_theme_constant_override("separation", 4)
-	box.add_child(row)
-	_council_button(row, "แจกอัตโนมัติ [F]", _council_auto, int(world.reserve[side]) > 0)
-	_council_button(row, "จบการประชุม [Enter]", _end_council, true)
-	_ui.add_child(panel)
-	panel.reset_size()
-	panel.position = ((SCREEN - panel.size) / 2.0).round()
-	_popup = panel
+	# The throne room (CouncilScreen.gd): every button calls back in here.
+	var scr := CouncilScreen.new()
+	_ui.add_child(scr)
+	scr.setup(self, world, side, _council_sel, _council_target, _council_warn)
+	_council_sel = scr.sel_id
+	_council_warn = ""
+	_popup = scr
 
 
-## Last column of a general's row: its one action this council (levy, raise
-## the castle's wall, build a siege engine, or persuade the aimed-at
-## prisoner), or what it already did.
-func _council_action_cell(grid: GridContainer, g, target) -> void:
-	var cell := HBoxContainer.new()
-	cell.add_theme_constant_override("separation", 2)
-	grid.add_child(cell)
-	if not world.can_draft(g):
-		_council_label(cell, "–", 7, DIM, false)
-		return
-	if world.acted.has(g.id):
-		var what := str(world.acted[g.id])
-		var done: String = {"levy": "เกณฑ์แล้ว", "persuade_ok": "ชวนสำเร็จ", "persuade_fail": "ชวนไม่สำเร็จ",
-				"joined": "เพิ่งเข้าร่วม", "fortify": "สร้างกำแพงแล้ว", "engine": "สร้างเครื่องตีแล้ว",
-				"promote": "ปูนบำเหน็จแล้ว"}.get(what, "สั่งแล้ว")
-		_council_label(cell, done, 7, TRIM_HI if what == "persuade_ok" else DIM, false)
-		return
-	_council_button(cell, "เกณฑ์+%d" % world.levy_amount(), _council_levy.bind(g.id), world.levy_amount() > 0)
-	_council_button(cell, "กำแพง", _council_fortify.bind(g.id), world.can_fortify(g))
-	if bool(world.siege_cfg.get("engines", true)):
-		_council_button(cell, "เครื่องตี", _council_engine.bind(g.id), world.can_build_engine(g))
-	if target != null:
-		var c: float = world.recruit_chance(target, g)
-		_council_button(cell, "ชวน %d%%" % int(roundf(c * 100.0)), _council_persuade.bind(g.id, target.id), c > 0.0)
+func _council_select(gid: String) -> void:
+	_council_sel = gid
+	_show_council()
 
 
-func _council_label(parent: Control, t: String, size: int, col: Color, centre: bool) -> void:
-	var l := Label.new()
-	l.text = t
-	if centre:
-		l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	l.add_theme_font_size_override("font_size", size)
-	l.add_theme_color_override("font_color", col)
-	parent.add_child(l)
+## A line in red on the council screen (why a button did nothing).
+func _council_note(t: String) -> void:
+	_council_warn = t
+	_show_council()
 
 
-func _council_button(parent: Control, t: String, cb: Callable, enabled: bool) -> void:
-	var b := Button.new()
-	b.text = t
-	b.focus_mode = Control.FOCUS_NONE
-	b.disabled = not enabled
-	b.add_theme_font_size_override("font_size", 7)
-	# Compact buttons so 6 generals still fit on the 320x180 screen.
-	for st in ["normal", "hover", "pressed", "disabled"]:
-		var bs := StyleBoxFlat.new()
-		bs.bg_color = {"normal": Color(0.14, 0.15, 0.24), "hover": Color(0.22, 0.24, 0.36),
-				"pressed": Color(0.3, 0.26, 0.16), "disabled": Color(0.08, 0.09, 0.13)}[st]
-		bs.border_color = TRIM if st != "disabled" else Color(0.25, 0.25, 0.3)
-		bs.set_border_width_all(1)
-		bs.content_margin_left = 3
-		bs.content_margin_right = 3
-		bs.content_margin_top = 0
-		bs.content_margin_bottom = 0
-		b.add_theme_stylebox_override(st, bs)
-	b.pressed.connect(cb)
-	parent.add_child(b)
+## Action: retrain the general's troops as another type of its own race.
+func _council_troops(gid: String, unit: String) -> void:
+	var g := world.get_general(gid)
+	if world.change_troops(g, unit):
+		_log("%s เปลี่ยนทหารเป็น%s" % [g.name, world.troop_label(g)])
+	world._take_events()
+	_show_council()
 
 
 func _council_draft(gid: String, n: int) -> void:

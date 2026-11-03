@@ -78,6 +78,7 @@ class General:
 	var level := 1  # 1..growth.max_level: makes the general tougher in battle
 	var xp := 0.0  # EXP toward the next level
 	var rank := 0  # index into ranks: caps the troops it leads
+	var unit := ""  # troop type it leads (battle_config units id); "" = its race's first type
 
 	func target() -> String:
 		return str(path[-1]) if not path.is_empty() else castle
@@ -106,6 +107,10 @@ var acted := {}  # general id -> what it did this council ("levy", "persuade_ok"
 var promoted := {}  # general id -> true once promoted this council
 var tried := {}  # prisoner id -> true once someone tried to persuade it this council
 var rng := RandomNumberGenerator.new()
+## Troop types per race (battle_config.json "troop_types", Art 2026-10-30): a
+## general picks only from its own race's list (race of its origin side, see
+## sides.<id>.race in world_map.json), only types its rank has unlocked.
+var troop_types := {}
 var _council_open := false  # actions only count while a council is on
 
 var _next_battle := 1
@@ -152,12 +157,16 @@ func _init(map_data: Dictionary, ai: Array = [], seed_value: int = 0) -> void:
 		g.loyalty = int(gd.get("loyalty", 100 if g.king else int(prisoner_cfg.get("default_loyalty", 60))))
 		g.level = clampi(int(gd.get("level", 1)), 1, max_level())
 		g.rank = clampi(int(gd.get("rank", rank_count() - 1 if g.king else 0)), 0, maxi(0, rank_count() - 1))
+		g.unit = str(gd.get("troop_type", ""))
 		g.troops = float(gd.get("troops", max_troops_of(g)))
 		g.castle = gd.castle
 		g.from = gd.castle
 		g.home = gd.castle
 		g.pos = castles[gd.castle].pos
 		generals.append(g)
+	troop_types = data.get("troop_types", {})
+	if troop_types.is_empty():
+		troop_types = _load_troop_types(str(data.get("battle_config", "res://data/battle_config.json")))
 	council_cfg = data.get("council", {})
 	if not council_cfg.is_empty():
 		next_council = float(council_cfg.get("every_days", 30))
@@ -711,6 +720,73 @@ func auto_draft(side: String) -> void:
 
 ## A general can act if it stands in its own castle, the council is on and it
 ## has not acted yet this council.
+# --- troop types ------------------------------------------------------------------
+
+static func _load_troop_types(path: String) -> Dictionary:
+	if not FileAccess.file_exists(path):
+		return {}
+	var parsed = JSON.parse_string(FileAccess.get_file_as_string(path))
+	if parsed is Dictionary:
+		return parsed.get("troop_types", {})
+	return {}
+
+
+## Race of g's troops: the race of the side it started on (a general who
+## changes sides keeps its own people).
+func race_of(g: General) -> String:
+	var sides: Dictionary = data.get("sides", {})
+	var sd: Dictionary = sides.get(g.origin if g.origin != "" else g.side, {})
+	return str(sd.get("race", ""))
+
+
+## g's race's troop types: [{unit, label, rank, desc, pips, unlocked}].
+func troop_choices(g: General) -> Array:
+	var out := []
+	for t in troop_types.get(race_of(g), []):
+		var e: Dictionary = t.duplicate()
+		e["unlocked"] = g.rank >= int(t.get("rank", 0))
+		out.append(e)
+	return out
+
+
+## Troop type g leads now (battle_config units id; "" = no list for its race,
+## the battle uses the side's default).
+func unit_of(g: General) -> String:
+	var list: Array = troop_types.get(race_of(g), [])
+	for t in list:
+		if str(t.unit) == g.unit:
+			return g.unit
+	return str(list[0].unit) if not list.is_empty() else ""
+
+
+func troop_label(g: General) -> String:
+	var u := unit_of(g)
+	for t in troop_types.get(race_of(g), []):
+		if str(t.unit) == u:
+			return str(t.get("label", u))
+	return ""
+
+
+## Council action: retrain g's troops as `unit` (its race's list, unlocked by
+## its rank). Troops keep their number.
+func can_change_troops(g: General, unit: String) -> bool:
+	if not can_act(g) or unit == unit_of(g):
+		return false
+	for t in troop_choices(g):
+		if str(t.unit) == unit:
+			return bool(t.unlocked)
+	return false
+
+
+func change_troops(g: General, unit: String) -> bool:
+	if not can_change_troops(g, unit):
+		return false
+	g.unit = unit
+	acted[g.id] = "troops"
+	_events.append({"type": "troops", "general": g.id, "unit": unit})
+	return true
+
+
 func can_act(g: General) -> bool:
 	return _council_open and can_draft(g) and not acted.has(g.id)
 
@@ -863,6 +939,9 @@ func battle_mods(b: Dictionary) -> Dictionary:
 	for gid in [b.a, b.d]:
 		var g := get_general(str(gid))
 		var m := general_mods(g)
+		var u := unit_of(g)
+		if u != "":
+			m["unit"] = u  # troop type (AutoBattle / Battle.gd turn it into units)
 		if not m.is_empty():
 			out[g.side] = m
 	var info := siege_info(b)
@@ -1118,7 +1197,7 @@ func to_save() -> Dictionary:
 				"path": g.path.duplicate(), "state": g.state, "retreating": g.retreating,
 				"origin": g.origin, "loyalty": g.loyalty, "held_by": g.held_by,
 				"captive_councils": g.captive_councils, "engine": g.engine, "level": g.level,
-				"xp": g.xp, "rank": g.rank})
+				"xp": g.xp, "rank": g.rank, "unit": g.unit})
 	return {"version": SAVE_VERSION, "day": day, "ai_sides": ai_sides.duplicate(), "winner": winner,
 			"castles": cs, "generals": gs, "battles": battles.duplicate(true),
 			"reserve": reserve.duplicate(), "council": council.duplicate(),
@@ -1166,6 +1245,7 @@ func apply_save(s: Dictionary) -> bool:
 		g.level = clampi(int(gd.level), 1, max_level())
 		g.xp = float(gd.xp)
 		g.rank = clampi(int(gd.rank), 0, maxi(0, rank_count() - 1))
+		g.unit = str(gd.get("unit", ""))
 	battles = []
 	for b in s.get("battles", []):
 		battles.append({"id": int(b.id), "a": str(b.a), "d": str(b.d), "castle": str(b.castle),
