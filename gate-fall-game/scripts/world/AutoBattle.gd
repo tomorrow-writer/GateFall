@@ -50,7 +50,9 @@ static func overrides(cfg: Dictionary, troops: Dictionary, player_side: String, 
 		var o: Dictionary = mods.get(sd.id, {}).duplicate()
 		if sd.id != player_side:
 			o["ai"] = true
+		var unit := str(o.get("unit", sd.unit))
+		o.erase("unit")
 		if troops.has(sd.id):
-			o["units"] = [[sd.unit, int(troops[sd.id])]]
+			o["units"] = [[unit, int(troops[sd.id])]]
 		ov[sd.id] = o
 	return ov
