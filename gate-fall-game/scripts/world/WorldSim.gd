@@ -681,6 +681,24 @@ func _start_council() -> void:
 		_next_council()
 
 
+## Dev (WorldMap F3 / "ทดสอบประชุม"): hold a council now instead of on
+## day next_council. The next one is due every_days after this one ends.
+func start_council_now() -> bool:
+	if _council_open or winner != "" or council_cfg.is_empty():
+		return false
+	_start_council()
+	return true
+
+
+## Dev: the first non-king general of `of_side` becomes `by`'s prisoner (so
+## the council's prison panel and the persuade order have someone to show).
+func dev_take_prisoner(of_side: String, by: String) -> void:
+	for g in generals_of(of_side):
+		if not g.king:
+			_take_prisoner(g, by)
+			return
+
+
 ## A human side is done with the council. The map goes on once nobody is left.
 func end_council(side: String) -> void:
 	if not council.has(side):

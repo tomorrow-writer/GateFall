@@ -14,6 +14,9 @@
 ##   Space = pause / go on · 1 / 2 / 3 = speed ×1 / ×2 / ×4
 ##   Tab = next of your generals · Esc = deselect (nothing selected = pause menu)
 ##   when a battle starts: Enter = fight it yourself · A = auto-resolve
+##   F3 (dev) = hold the council now (the throne room) instead of on day 30;
+##     the title screen's "ทดสอบประชุม" starts a slime war with one enemy
+##     general already in our prison and opens the council at once
 ##
 ## Pause menu (like DF's Start menu): Esc, or click the speed label on the top
 ## bar. Time stops while it is open. Resume · save (3 slots, Campaign) · load ·
@@ -182,6 +185,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			_set_speed(data.time.speeds.size() - 1)
 		KEY_TAB:
 			_select_next()
+		KEY_F3:
+			_dev_council()
 		KEY_ESCAPE:
 			if selected != "":
 				selected = ""
@@ -752,7 +757,27 @@ func _show_title() -> void:
 	_popup = _make_popup("Gatefall · เลือกฝั่ง",
 			"ประตูต่างมิติเปิดขึ้นทั่วโลก\nยึดปราสาทหลวงของฝ่ายตรงข้ามเพื่อชนะสงคราม",
 			[["สไลม์ (ผู้รุกราน)", _start.bind("S")], ["มนุษย์ (ผู้ปกป้อง)", _start.bind("K")],
-			["โหลดเกม", _show_menu.bind("load")], ["ทดสอบฉากรบ", Campaign.test_battle]])
+			["โหลดเกม", _show_menu.bind("load")], ["ทดสอบฉากรบ", Campaign.test_battle],
+			["ทดสอบประชุม", _dev_council_test]])
+
+
+## Dev: open the council (throne room) now. F3 on the map.
+func _dev_council() -> void:
+	if world == null or not world.start_council_now():
+		return
+	_log("[dev] เปิดประชุมทัพทันที")
+	for e in world._take_events():
+		_on_event(e)
+	_check_battles()
+
+
+## Dev from the title screen: new slime war, one human general already our
+## prisoner, council open at once.
+func _dev_council_test() -> void:
+	_start("S")
+	world.dev_take_prisoner("K", "S")
+	world._take_events()
+	_dev_council()
 
 
 func _start(side: String) -> void:
