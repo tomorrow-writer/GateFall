@@ -191,6 +191,7 @@ class Unit:
 	var bx: float = 0.0  # where a split piece came from (view only)
 	var by: float = 0.0
 	var is_general: bool = false
+	var cls: String = "foot"  # troop class: foot / ranged / mounted / general (combat.class_mult)
 	var front_take: float = 0.0  # general: own damage-taken x at the front (0 = general_charge.front_take)
 	var flank_sign: int = 1  # -1 = upper half of the formation, +1 = lower (envelop side)
 	## 0 = main group, 1 = guard group, 2 = raid group, 10 + k = division k
