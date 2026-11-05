@@ -59,7 +59,7 @@ func _init() -> void:
 				if log_first and r == 0:
 					print("  day %.1f battle %s(Lv%d %d) vs %s(Lv%d %d) at %s%s -> %s left %s" % [w.day, a.name, a.level,
 							a.troops, d.name, d.level, d.troops, w.castles[b.castle].name if b.castle != "" else "road",
-							" wall %d%s" % [si.wall, " engine->%d" % si.used if si.engine else ""] if si.castle else "",
+							" wall %d%s" % [si.wall, " engine->%d breach %d" % [si.used, si.breach] if si.engine else ""] if si.castle else "",
 							res.winner, res.left])
 				w.resolve_battle(int(b.id), res.winner, res.left, res.fell)
 				for e in w._take_events():

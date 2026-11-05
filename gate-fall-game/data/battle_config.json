@@ -52,6 +52,18 @@
   "_split_note": "Open a lane: troops in it step out to the neighbouring lane at speed_mult x their speed, nobody enters it for duration s, everyone hits crowd_atk x while it is open. margin = px around the lane that also counts as inside.",
   "split": { "label": "แยกเลน", "duration": 2.5, "speed_mult": 2.5, "crowd_atk": 0.95, "margin": 2 },
 
+  "_walls_note": "Castle walls in the field (feature/battle-walls). A side with override wall = level (the world map sends it for the castle's owner) gets levels[level] built across the field at x px from its own edge, one segment per lane (top/middle/bottom): stakes = enemies crossing move stakes_slow x; wall = enemies can't pass while it stands (hp), one pressed against it whose target stands behind it hits the wall (bash_mult x its attack, generals general_bash_mult x more); gate = open. Own troops pass freely; on hold they stop at the face and fight from it, taking cover_take x from hits and shots within cover_depth px behind a standing wall or palisade (not the general, not specials). Measured with run_siege (AI both sides): Lv1 is worth about 1.1x troops, Lv2 about 1.3x, Lv3 about 1.45x (close to the old -10/-20/-30% damage taken); an engine breach takes off about one level. The outer wall segments also close the flank tracks (raiders that run into one fight their way in). towers = towers on the first wall segments, shooting the nearest enemy troop within tower.range every tower.cd s for tower.damage (x damage_min..+jitter) until their segment falls. Override breach = segments broken at the start (siege engine: top first). Starting values, tune with tools/run_siege.gd.",
+  "walls": {
+    "x": 178, "thickness": 12, "cover_depth": 24, "stakes_slow": 0.45, "bash_mult": 1.0, "general_bash_mult": 1.0,
+    "levels": [
+      {},
+      { "label": "รั้วไม้", "stakes": true, "cover_take": 0.9 },
+      { "label": "กำแพงหิน", "segments": ["wall", "gate", "wall"], "hp": 150, "cover_take": 0.8 },
+      { "label": "กำแพงหิน+หอธนู", "segments": ["wall", "gate", "wall"], "hp": 210, "cover_take": 0.7, "towers": 2 }
+    ],
+    "tower": { "range": 130, "cd": 1.4, "damage": 1.6, "speed": 170, "arc": 12, "height": 24 }
+  },
+
   "_duel_rules_note": "When both armies are gone and both generals stand, the battle cuts to a duel (BattleSim duel section). offer_time = s each side has to choose duel or retreat (undecided = duel; retreat = lose the battle, general survives). Then turns alternate, the faster general first: start_gap s before the first blow, hit_gap s between blows in a turn, turn_gap s between turns. The player only watches.",
   "duel_rules": { "offer_time": 8, "start_gap": 1.2, "hit_gap": 0.3, "turn_gap": 0.9 },
 

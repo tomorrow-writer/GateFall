@@ -134,6 +134,8 @@ class Army:
 	var auto_slot: int = -1  # slot auto_cast fires (-1 = the largest)
 	var guard: Dictionary = {}  # defence special running {take, left, total, special}; empty = none
 	var wall_take: float = 1.0  # castle walls (world map): troops' damage taken x; the general is not covered
+	var wall_lv: int = 0  # castle wall in the field (walls.levels[wall_lv]); 0 = none
+	var wall_breach: int = 0  # wall segments already broken at the start (siege engine)
 	var gen_hp: float = 1.0  # world-map general level: its HP x
 	var gen_atk: float = 1.0  # world-map general level: its hits and duel blows x
 	var special_power: float = 1.0  # world-map general level: its specials' damage x
@@ -186,6 +188,10 @@ class Unit:
 	var flanking: bool = false  # raider on its raid run (any stage): may leave the lanes
 	var running: bool = false  # ...and out on the flank track: enemies neither chase nor block it
 	var raid_out: bool = false  # this raid it has reached its flank track (only then may it turn in)
+	var raid_walled: bool = false  # this raid ran into an enemy wall on its track: fights its way in instead
+	var wall_seg: int = -1  # enemy wall segment (index into walls) it is pressed against, -1 = none
+	var px: float = 0.0  # position at the start of the step (walls push back to it)
+	var py: float = 0.0
 	var swing: float = 0.0  # attack swing timer (view only)
 	var born: float = 0.0  # spawn-in timer for split pieces (view only)
 	var bx: float = 0.0  # where a split piece came from (view only)
@@ -241,6 +247,16 @@ var _switch_delay: float = 0.0
 var _special_take: bool = false
 var _class_mult: Dictionary = {}  # combat.class_mult: {attacker class: {target class: x}}
 var _track: float = 0.0  # field.flank_track: px of flank track above / below the lanes (raiders only)
+## Castle walls in the field (cfg.walls, override "wall" = level). One entry per
+## lane of a walled side: {side (index), lane, kind ("wall" | "gate" | "stakes"),
+## y0, y1, x0, x1 (world band), front (x of the face toward the enemy), out
+## (+1/-1: the enemy's way), hp, max_hp, cover}. BattleView draws them.
+var walls: Array = []
+## Towers on the walls (walls.levels[].towers): {side, seg (wall index it
+## stands on: silent once that segment falls), x, y, t (s to next shot)}.
+var towers: Array = []
+var _wall_cfg: Dictionary = {}
+var _wall_of := {}  # side index -> {front, out, x0, x1, level cfg}
 
 
 static func load_config(path: String = "res://data/battle_config.json") -> Dictionary:
@@ -259,7 +275,10 @@ static func load_config(path: String = "res://data/battle_config.json") -> Dicti
 ## "auto_slot", "ai", "dodge", "gcharge", "units", "wall_take", "general_hp",
 ## "general_atk", "special_power"}.
 ##   wall_take: troops (not the general) take this x damage, hits and specials
-##              alike: castle walls in a world-map battle (default 1).
+##              alike (old castle-wall buff; the map now sends "wall" instead).
+##   wall:      castle wall level in the field (cfg.walls.levels), default 0.
+##   breach:    wall segments already broken at the start (siege engine).
+##   ai_order:  order an AI side starts with (a walled defender holds the wall).
 ##   general_hp / general_atk / special_power: the world-map general's level
 ##              (WorldSim.general_mods): its HP x, its hits and duel blows x,
 ##              its specials' damage x (default 1 = the config's numbers).
@@ -283,6 +302,7 @@ func _init(config: Dictionary, overrides: Dictionary = {}, shared_rng: BattleRng
 	_special_take = bool(_combat.get("special_take_mult", false))
 	_class_mult = _combat.get("class_mult", {})
 	_track = float(_field.get("flank_track", 0))
+	_wall_cfg = cfg.get("walls", {})
 	var brain_seed := rng.state
 
 	for i in cfg.sides.size():
@@ -301,6 +321,8 @@ func _init(config: Dictionary, overrides: Dictionary = {}, shared_rng: BattleRng
 		s.auto_slot = int(ov.get("auto_slot", s.specials.size() - 1))
 		s.auto_cast = bool(ov.get("auto_cast", false))
 		s.wall_take = float(ov.get("wall_take", 1.0))
+		s.wall_lv = int(ov.get("wall", 0))
+		s.wall_breach = int(ov.get("breach", 0))
 		s.gen_hp = float(ov.get("general_hp", 1.0))
 		s.gen_atk = float(ov.get("general_atk", 1.0))
 		s.special_power = float(ov.get("special_power", 1.0))
@@ -313,6 +335,8 @@ func _init(config: Dictionary, overrides: Dictionary = {}, shared_rng: BattleRng
 		var gcharge := str(ov.get("gcharge", "ai" if ai_cast else "never"))
 		if gcharge == "always":
 			s.gen_charge = true
+		if ai_cast and ov.has("ai_order") and cfg.orders.has(str(ov.ai_order)):
+			_apply_order(s, str(ov.ai_order))
 		if ai_cast or dodge or gcharge == "ai":
 			# Own rng (never the sim's), so configs without AI keep the
 			# prototype's rng sequence.
@@ -395,6 +419,7 @@ func _init(config: Dictionary, overrides: Dictionary = {}, shared_rng: BattleRng
 			if u.side == s and u.group == GROUP_GUARD:
 				u.gox = u.x - g.x
 				u.goy = u.y - g.y
+	_build_walls()
 
 
 ## Advance the battle by dt seconds. Returns the events since the last step
@@ -410,6 +435,8 @@ func step(dt: float) -> Array:
 	for u in units:
 		if u.alive:
 			live.append(u)
+			u.px = u.x
+			u.py = u.y
 
 	for s in sides:
 		s.mp = minf(s.mp_max, s.mp + dt * s.mp_regen)
@@ -487,6 +514,7 @@ func step(dt: float) -> Array:
 			u.running = false
 			u.flanking = false
 			u.raid_out = false
+			u.raid_walled = false
 		var dmode := us.dispersed and not u.is_general and not gmode and not rmode and _lanes >= 3 \
 				and us.split_lane < 0
 		# Disperse: troops keep out of the middle lane, each to its own side.
@@ -564,6 +592,9 @@ func step(dt: float) -> Array:
 			if us.hold_range > 0.0 and d > us.hold_range and not u.is_general and not gmode:
 				u.walking = false
 				continue
+			# Pressed against an enemy wall with the target behind it: break it.
+			if u.wall_seg >= 0 and _bash_wall(u, v, dt):
+				continue
 			var sp := u.spd * us.form_spd
 			var my := dy * move_y
 			# Envelop: swing out above/below the enemy general instead of straight at it.
@@ -618,6 +649,9 @@ func step(dt: float) -> Array:
 				# Behind castle walls (world-map siege): troops only, not the general.
 				if v.side.wall_take != 1.0 and not v.is_general:
 					dmg *= v.side.wall_take
+				# Fighting from behind its own wall (walls.levels[].cover_take).
+				if not walls.is_empty():
+					dmg *= _cover_take(v)
 				# Troop type counters (spears vs horses, horses vs archers, ...).
 				if not _class_mult.is_empty():
 					dmg *= class_mult(u.cls, v.cls)
@@ -632,8 +666,11 @@ func step(dt: float) -> Array:
 		if u.swing > 0.0:
 			u.swing = maxf(0.0, u.swing - dt)
 
+	_step_towers(dt, live)
 	_step_shots(dt, float(_combat.hit_flash), mp_on_hit)
 	_separate(live)
+	if not walls.is_empty():
+		_apply_walls(live)
 
 	var c := count()
 	var a := sides[0]
@@ -821,7 +858,10 @@ func _step_shots(dt: float, hit_flash: float, mp_on_hit: float) -> void:
 		if sh.t < sh.dur:
 			keep.append(sh)
 		elif v.alive:
-			_apply_hit(units[sh.by], v, float(sh.dmg), hit_flash, mp_on_hit)
+			if int(sh.by) < 0:
+				_apply_tower_hit(v, float(sh.dmg), hit_flash)
+			else:
+				_apply_hit(units[sh.by], v, float(sh.dmg), hit_flash, mp_on_hit)
 	shots = keep
 
 
@@ -1300,6 +1340,11 @@ func _catches(u: Unit, raider: Unit) -> bool:
 ## never straight through the fight.
 ## Returns true while still on the way (false = fight the general).
 func _raid_run(u: Unit, eg: Unit, dt: float, move_y: float, live: Array[Unit]) -> bool:
+	if u.raid_walled:
+		# An enemy wall closes the flank track: fight in like the others.
+		u.flanking = false
+		u.running = false
+		return false
 	var f := float(u.side.facing)
 	var ahead := (eg.x - u.x) * f
 	if ahead <= RAID_TURN and u.raid_out:
@@ -1911,3 +1956,234 @@ static func _layout_main(layout: Dictionary, n: int) -> Array:
 		for i in mini(n, layout.spots.size()):
 			out.append([float(layout.spots[i][0]), float(layout.spots[i][1])])
 	return out
+
+
+# --- castle walls in the field --------------------------------------------------------
+# A side with override "wall" = level gets cfg.walls.levels[level] built across
+# the field at walls.x px from its own edge, one segment per lane:
+#   "stakes" (palisade): enemies crossing it move walls.stakes_slow x
+#   "wall": enemies can't pass while it stands (hp); one pressed against it with
+#           its target behind it hits the wall instead (_bash_wall). Its own
+#           troops pass freely; on "hold" they stop at the wall's face and fight
+#           from it, taking cover_take x damage from hits and shots while within
+#           walls.cover_depth px behind a standing wall. The outer segments also
+#           close the flank tracks (a raider that runs into one fights its way in).
+#   "gate": open.
+# levels[].towers: towers on the first wall segments shoot the nearest enemy
+# troop in range (walls.tower) until their segment falls.
+
+## The level config a side's wall uses ({} = no wall).
+func wall_level_cfg(s: Army) -> Dictionary:
+	var levels: Array = _wall_cfg.get("levels", [])
+	if s.wall_lv <= 0 or levels.is_empty():
+		return {}
+	return levels[mini(s.wall_lv, levels.size() - 1)]
+
+
+func _build_walls() -> void:
+	if _wall_cfg.is_empty():
+		return
+	var width := float(_field.width)
+	var th := float(_wall_cfg.get("thickness", 8))
+	var lf := float(_wall_cfg.get("x", 176))
+	var tower_cfg: Dictionary = _wall_cfg.get("tower", {})
+	for s in sides:
+		var lc := wall_level_cfg(s)
+		if lc.is_empty():
+			continue
+		var f := float(s.facing)
+		var front := lf if s.facing == 1 else width - lf
+		var back := front - f * th
+		var x0 := minf(front, back)
+		var x1 := maxf(front, back)
+		_wall_of[s.index] = {"front": front, "out": f, "x0": x0, "x1": x1, "cfg": lc}
+		var segs: Array = lc.get("segments", [])
+		var n := maxi(1, _lanes)
+		for lane in n:
+			var kind := str(segs[lane]) if lane < segs.size() else ("stakes" if bool(lc.get("stakes", false)) else "")
+			if kind == "":
+				continue
+			var b := lane_bounds(lane) if _lanes > 0 else Vector2(float(_field.y_min), float(_field.y_max))
+			var y0 := b.x
+			var y1 := b.y
+			if lane == 0:
+				y0 -= _track + 2.0
+			if lane == n - 1:
+				y1 += _track + 2.0
+			var hp := float(lc.get("hp", 100)) if kind == "wall" else 0.0
+			walls.append({"side": s.index, "lane": lane, "kind": kind, "y0": y0, "y1": y1,
+					"x0": x0, "x1": x1, "front": front, "out": f, "hp": hp, "max_hp": hp,
+					"cover": float(lc.get("cover_take", 1.0)), "breached": false})
+		# Siege engine: the outer segments are broken before the fight (top first).
+		var left := s.wall_breach
+		for want in [0, n - 1, 1]:
+			for w in walls:
+				if left > 0 and w.side == s.index and w.kind == "wall" and int(w.lane) == want and float(w.hp) > 0.0:
+					w.hp = 0.0
+					w.breached = true
+					left -= 1
+		var nt := int(lc.get("towers", 0))
+		var cd := float(tower_cfg.get("cd", 1.5))
+		for wi in walls.size():
+			var w: Dictionary = walls[wi]
+			if nt <= 0 or w.side != s.index or w.kind != "wall":
+				continue
+			var ty := clampf((float(w.y0) + float(w.y1)) * 0.5, float(_field.y_min) + 4.0, float(_field.y_max) - 4.0)
+			towers.append({"side": s.index, "seg": wi, "x": (x0 + x1) * 0.5, "y": ty,
+					"t": cd * (0.5 + 0.3 * towers.size())})
+			nt -= 1
+
+
+## Standing wall segment of side index si at height y, -1 = none (gate, broken, stakes).
+func _wall_seg_at(si: int, y: float) -> int:
+	for wi in walls.size():
+		var w: Dictionary = walls[wi]
+		if w.side == si and w.kind == "wall" and float(w.hp) > 0.0 and y >= float(w.y0) and y <= float(w.y1):
+			return wi
+	return -1
+
+
+## After everyone moved: enemies can't be inside a standing wall (pushed back
+## to the side they came from; one that slid in sideways from an opening
+## keeps its height), palisades slow them, and on "hold" a side's own troops
+## stop at its wall's face. Sets u.wall_seg for those touching a wall.
+func _apply_walls(live: Array[Unit]) -> void:
+	var slow := float(_wall_cfg.get("stakes_slow", 0.5))
+	for u in live:
+		if not u.alive:
+			continue
+		u.wall_seg = -1
+		var own = _wall_of.get(u.side.index)
+		if own != null and u.side.hold_range > 0.0 and not u.is_general and not u.side.retreating \
+				and not u.flanking and _has_stone(u.side.index):
+			if (u.x - float(own.front)) * float(own.out) > 0.0:
+				u.x = float(own.front)
+		for wi in walls.size():
+			var w: Dictionary = walls[wi]
+			if w.side == u.side.index or u.y < float(w.y0) or u.y > float(w.y1):
+				continue
+			var lo := float(w.x0) - u.radius
+			var hi := float(w.x1) + u.radius
+			if w.kind == "stakes":
+				if u.x > lo and u.x < hi:
+					u.x = u.px + (u.x - u.px) * slow
+					u.y = u.py + (u.y - u.py) * slow
+				continue
+			if w.kind != "wall" or float(w.hp) <= 0.0:
+				continue
+			if u.x <= lo - 2.0 or u.x >= hi + 2.0:
+				continue
+			if u.x > lo and u.x < hi:
+				if u.px > lo and u.px < hi and (u.py < float(w.y0) or u.py > float(w.y1)):
+					u.y = u.py
+				else:
+					var mid := (float(w.x0) + float(w.x1)) * 0.5
+					u.x = hi if u.px >= mid else lo
+			u.wall_seg = wi
+			if u.flanking:
+				u.raid_walled = true
+				u.flanking = false
+				u.running = false
+
+
+## Side index si has a wall or palisade in the field (its troops hold at it).
+func _has_stone(si: int) -> bool:
+	for w in walls:
+		if w.side == si and (w.kind == "wall" or w.kind == "stakes"):
+			return true
+	return false
+
+
+## u is against wall segment u.wall_seg and its target v stands behind that
+## same segment: hit the wall (true = done for this step). A target behind an
+## opening is walked to instead (the unit slides along the face to the gate).
+func _bash_wall(u: Unit, v: Unit, dt: float) -> bool:
+	var w: Dictionary = walls[u.wall_seg]
+	if float(w.hp) <= 0.0 or v.y < float(w.y0) or v.y > float(w.y1):
+		return false
+	var mid := (float(w.x0) + float(w.x1)) * 0.5
+	if (v.x - mid) * (u.x - mid) >= 0.0:
+		return false
+	u.walking = false
+	if u.t > 0.0:
+		return true
+	u.t = u.cd * (float(_combat.attack_cd_min) + rng.next() * float(_combat.attack_cd_jitter))
+	u.swing = float(_combat.swing_time)
+	var dmg := u.atk * (float(_combat.damage_min) + rng.next() * float(_combat.damage_jitter))
+	dmg *= u.side.order_atk * u.side.form_atk * float(_wall_cfg.get("bash_mult", 1.0))
+	if u.is_general:
+		dmg *= float(_wall_cfg.get("general_bash_mult", 1.0))
+	w.hp = maxf(0.0, float(w.hp) - dmg)
+	if record_events:
+		_events.append({"type": "wallhit", "wall": u.wall_seg, "by": u.id, "x": u.x, "y": u.y, "dmg": dmg})
+		if float(w.hp) <= 0.0:
+			_events.append({"type": "wallbreak", "wall": u.wall_seg, "side": sides[int(w.side)].id,
+					"lane": int(w.lane), "x": (float(w.x0) + float(w.x1)) * 0.5,
+					"y0": float(w.y0), "y1": float(w.y1)})
+	return true
+
+
+## Damage-taken x for v fighting from behind its own standing wall (1 = none).
+func _cover_take(v: Unit) -> float:
+	if v.is_general:
+		return 1.0
+	var own = _wall_of.get(v.side.index)
+	if own == null:
+		return 1.0
+	var depth := (float(own.front) - v.x) * float(own.out)  # px behind the face (+ = inside)
+	if depth < -1.0 or depth > float(_wall_cfg.get("thickness", 8)) + float(_wall_cfg.get("cover_depth", 24)):
+		return 1.0
+	for w in walls:
+		if w.side == v.side.index and v.y >= float(w.y0) and v.y <= float(w.y1) \
+				and (w.kind == "stakes" or (w.kind == "wall" and float(w.hp) > 0.0)):
+			return float(w.cover)
+	return 1.0
+
+
+## Towers shoot the nearest enemy troop within range while their segment stands.
+func _step_towers(dt: float, live: Array[Unit]) -> void:
+	if towers.is_empty():
+		return
+	var tc: Dictionary = _wall_cfg.get("tower", {})
+	var reach := float(tc.get("range", 120))
+	for ti in towers.size():
+		var t: Dictionary = towers[ti]
+		if float(walls[int(t.seg)].hp) <= 0.0:
+			continue
+		t.t = float(t.t) - dt
+		if float(t.t) > 0.0:
+			continue
+		var best: Unit = null
+		var bd := reach * reach
+		for v in live:
+			if v.alive and not v.is_general and v.side.index != int(t.side):
+				var dx := v.x - float(t.x)
+				var dy := v.y - float(t.y)
+				var dd := dx * dx + dy * dy
+				if dd < bd:
+					bd = dd
+					best = v
+		if best == null:
+			t.t = 0.25
+			continue
+		t.t = float(tc.get("cd", 1.5))
+		var dmg := float(tc.get("damage", 1.0)) * (float(_combat.damage_min) + rng.next() * float(_combat.damage_jitter))
+		dmg *= best.side.order_take * best.side.form_take
+		if not best.side.guard.is_empty():
+			dmg *= float(best.side.guard.take)
+		var d := sqrt(bd)
+		var h := float(tc.get("height", 22))
+		shots.append({"by": -1, "tower": ti, "tgt": best.id, "x0": float(t.x), "y0": float(t.y) - h,
+				"tx": best.x, "ty": best.y, "t": 0.0, "dur": maxf(0.05, d / float(tc.get("speed", 170))),
+				"dmg": dmg, "arc": float(tc.get("arc", 12))})
+		if record_events:
+			_events.append({"type": "tower_shoot", "tower": ti, "tgt": best.id, "side": sides[int(t.side)].id})
+
+
+func _apply_tower_hit(v: Unit, dmg: float, hit_flash: float) -> void:
+	v.hp -= dmg
+	v.fx = hit_flash
+	if record_events:
+		_events.append({"type": "hit", "id": v.id, "by": -1, "x": v.x, "y": v.y, "side": v.side.id, "dmg": dmg})
+	if v.hp <= 0.0:
+		_kill(v)

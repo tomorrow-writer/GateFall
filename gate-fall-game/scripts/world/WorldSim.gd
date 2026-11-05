@@ -29,15 +29,17 @@
 ##     prisoner to join. Handing out troops from the reserve is free.
 ##   - walls (like a siege in DF): each castle has a wall level 0..siege.wall_max.
 ##     A general in its own castle may spend its council action to raise it
-##     by 1 (once per castle per council). Troops defending a castle they own
-##     take siege.wall_take_per_level less damage per level (not the general,
-##     not the duel). Taking a castle knocks siege.wall_lost_on_capture off.
-##     Road battles have no walls.
+##     by 1 (once per castle per council). The wall stands in the battle field
+##     for the side that owns the castle (battle_mods sends "wall" = level:
+##     battle_config.json walls; Lv1 palisade, Lv2 stone wall with a gate,
+##     Lv3 + towers) and its AI holds at it. Taking a castle knocks
+##     siege.wall_lost_on_capture off. Road battles have no walls.
 ##   - siege engine: a council action too. The general drags it along
-##     (siege.engine_speed x march speed); attacking a walled castle it cancels
-##     siege.engine_cancels wall levels for that battle, then it is spent (won
-##     or lost; a castle with no wall leaves it for the next). Useless on a
-##     road, and lost if the general loses a road battle or is taken.
+##     (siege.engine_speed x march speed); attacking a walled castle it breaks
+##     siege.engine_breach wall segments before the battle (a palisade: pulls
+##     it up), then it is spent (won or lost; a castle with no wall leaves it
+##     for the next). Useless on a road, and lost if the general loses a road
+##     battle or is taken.
 ##   - prisoners: a beaten general whose general fell in battle (not one that
 ##     pulled out) is taken with chance prisoners.capture_if_fell; no way home =
 ##     always taken. The captor keeps it (`held_by`) and may persuade it at each
@@ -914,9 +916,19 @@ func engine_speed() -> float:
 	return float(siege_cfg.get("engine_speed", 0.7))
 
 
-## Damage-taken multiplier for troops behind a wall of this level (1 = none).
+## How much the map AI counts a wall of this level when weighing a castle's
+## defence: defence / wall_take (1 = none). The battle itself uses the wall
+## in the field (battle_mods), not this.
 func wall_take(level: int) -> float:
-	return clampf(1.0 - float(siege_cfg.get("wall_take_per_level", 0.1)) * level, 0.05, 1.0)
+	return clampf(1.0 - float(siege_cfg.get("ai_wall_take_per_level", 0.1)) * level, 0.05, 1.0)
+
+
+## Name of a wall level on the map ("" for 0).
+func wall_label(level: int) -> String:
+	var labels: Array = siege_cfg.get("wall_labels", [])
+	if level <= 0:
+		return ""
+	return str(labels[mini(level, labels.size() - 1)]) if not labels.is_empty() else "Lv%d" % level
 
 
 ## Wall level that would count if `attacker` hit castle `cid` held by `def_side`
@@ -926,32 +938,37 @@ func wall_against(cid: String, def_side: String, attacker: General) -> int:
 		return 0
 	var lv := int(castles[cid].wall)
 	if attacker != null and attacker.engine:
-		lv -= int(siege_cfg.get("engine_cancels", 2))
+		lv -= 1  # roughly what a breach is worth (run_siege)
 	return maxi(0, lv)
 
 
 ## What the walls do in a queued battle: {castle: bool, wall: castle's level,
-## used: level that counts, engine: attacker brought one, side: defender side,
-## take: defender troops' damage-taken x}.
+## used: level built in the field (0 = none: a palisade an engine pulled up),
+## breach: wall segments the engine breaks first, engine: attacker brought
+## one, side: defender side, take: how the map AI counts it (wall_take)}.
 func siege_info(b: Dictionary) -> Dictionary:
 	var d := get_general(str(b.d))
 	var cid := str(b.get("castle", ""))
-	var info := {"castle": cid != "", "wall": 0, "used": 0, "engine": bool(b.get("engine", false)),
+	var info := {"castle": cid != "", "wall": 0, "used": 0, "breach": 0, "engine": bool(b.get("engine", false)),
 			"side": d.side if d != null else "", "take": 1.0}
 	if cid == "" or d == null:
 		return info
 	var wall: int = int(castles[cid].wall) if castles[cid].owner == d.side else 0
 	info.wall = wall
 	var lv := wall
-	if bool(info.engine):
-		lv = maxi(0, lv - int(siege_cfg.get("engine_cancels", 2)))
+	if bool(info.engine) and wall > 0:
+		if wall == 1:
+			lv = 0  # a palisade: the engine pulls the stakes up
+		else:
+			info.breach = int(siege_cfg.get("engine_breach", 1))
 	info.used = lv
-	info.take = wall_take(lv)
+	info.take = wall_take(maxi(0, lv - (1 if int(info.breach) > 0 else 0)))
 	return info
 
 
-## BattleSim overrides for a battle, per side: the walls ({"wall_take": x})
-## and each general's level (general_mods).
+## BattleSim overrides for a battle, per side: the castle owner's wall in the
+## field ({"wall": level, "breach": n, "ai_order": "hold"}: an AI defender
+## holds at its wall) and each general's level (general_mods).
 func battle_mods(b: Dictionary) -> Dictionary:
 	var out := {}
 	for gid in [b.a, b.d]:
@@ -963,10 +980,13 @@ func battle_mods(b: Dictionary) -> Dictionary:
 		if not m.is_empty():
 			out[g.side] = m
 	var info := siege_info(b)
-	if float(info.take) < 1.0:
+	if int(info.used) > 0:
 		var side := str(info.side)
 		var m: Dictionary = out.get(side, {})
-		m["wall_take"] = float(info.take)
+		m["wall"] = int(info.used)
+		m["ai_order"] = "hold"
+		if int(info.breach) > 0:
+			m["breach"] = int(info.breach)
 		out[side] = m
 	return out
 

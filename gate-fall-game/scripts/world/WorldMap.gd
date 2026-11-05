@@ -341,12 +341,14 @@ func _siege_text(b: Dictionary) -> String:
 	var info := world.siege_info(b)
 	if not bool(info.castle) or int(info.wall) <= 0:
 		return ""
-	var pct := int(roundf((1.0 - float(info.take)) * 100.0))
+	var name := world.wall_label(int(info.wall))
 	if bool(info.engine):
 		if int(info.used) <= 0:
-			return "เครื่องตีกำแพงพังกำแพง Lv%d หมด · ไม่มีบัพ" % int(info.wall)
-		return "เครื่องตีกำแพง: กำแพง Lv%d→%d · ทหารฝ่ายรับรับดาเมจ -%d%%" % [int(info.wall), int(info.used), pct]
-	return "กำแพง Lv%d · ทหารฝ่ายรับรับดาเมจ -%d%%" % [int(info.wall), pct]
+			return "เครื่องตีกำแพงถอนรั้วไม้ทิ้ง · ไม่มีกำแพง"
+		return "%s Lv%d · เครื่องตีกำแพงพังกำแพงเลนบนก่อนเริ่มรบ" % [name, int(info.wall)]
+	if int(info.wall) == 1:
+		return "%s Lv1 · ฝ่ายรับตั้งรับหลังรั้ว ศัตรูข้ามช้า" % name
+	return "%s Lv%d · ปิดเลนบน/ล่าง เข้าได้ทางประตูกลาง" % [name, int(info.wall)]
 
 
 func _fight(id: int) -> void:
@@ -1269,8 +1271,7 @@ func _draw_castle_tip(font: Font, cid: String) -> void:
 	var c: Dictionary = world.castles[cid]
 	var lines := ["%s (%s)" % [c.name, side_cfg[c.owner].label]]
 	if int(c.wall) > 0:
-		lines.append("กำแพง Lv%d (ทหารรับดาเมจ -%d%%)" % [int(c.wall),
-				int(roundf((1.0 - world.wall_take(int(c.wall))) * 100.0))])
+		lines.append("%s Lv%d" % [world.wall_label(int(c.wall)), int(c.wall)])
 	for e in world.generals_at(cid):
 		lines.append("%s ทหาร %d" % [e.name, int(e.troops)])
 	var w := 0.0

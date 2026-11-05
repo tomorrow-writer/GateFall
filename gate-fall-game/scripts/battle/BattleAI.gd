@@ -98,6 +98,7 @@ const DEFAULTS := {
 	"counter_raid_near": 60.0,
 	"div_interval": 5.0,
 	"div_min_alive": 3,
+	"sally_adv": 2.0,
 }
 
 var side_id: String
@@ -120,6 +121,7 @@ var _last_div := -1e9  # sim time the last division was sent
 var _regroup_watch := ""  # disperse: enemy side whose middle-lane special we split for
 var _start_hp := {}  # raid: both sides' troop HP at the first look (own, their)
 var _counter_restore := ""  # order to go back to after falling back from a raid ("*" = done)
+var _sallied := false  # walled side: came out from behind its wall (once per battle)
 
 
 ## opts: {"cast": bool, "dodge": bool, "gcharge": bool, "squads": bool, "seed": int}
@@ -162,8 +164,33 @@ func think(sim, dt: float) -> void:
 		_think_guard(sim, s)
 	if do_squads and s.form_command != "":
 		_think_form_command(sim, s)
+	if do_cast and not sim.walls.is_empty():
+		_think_sally(sim, s)
 	if do_cast:
 		_think_cast(sim, s)
+
+
+# --- castle walls --------------------------------------------------------------
+
+## Holding behind our own wall (BattleSim walls): come out and finish the
+## fight (order charge) once the enemy troops are gone or ours outweigh theirs
+## sally_adv x in HP. Holding on would let a lone enemy general pick off the
+## troops at the wall one by one. Once per battle.
+func _think_sally(sim, s) -> void:
+	if _sallied or s.order_name != "hold" or _restore_order != "" or _counter_restore != "" \
+			or not sim._has_stone(s.index):
+		return
+	var own := 0.0
+	var their := 0.0
+	for u in sim.units:
+		if u.alive and not u.is_general:
+			if u.side == s:
+				own += u.hp
+			else:
+				their += u.hp
+	if their <= 0.0 or own >= their * float(tuning.sally_adv):
+		_sallied = true
+		sim.set_order(side_id, "charge")
 
 
 # --- casting -------------------------------------------------------------------
@@ -515,8 +542,9 @@ func _think_gcharge(sim, s) -> void:
 	if style == "never":
 		return
 	if style == "front":
-		# only alongside troops that are going in themselves
-		var with_troops: bool = not s.retreating and s.hold_range <= 0.0
+		# only alongside troops that are going in themselves (or holding
+		# their own castle wall: the fight is at the wall, not back home)
+		var with_troops: bool = not s.retreating and (s.hold_range <= 0.0 or sim._has_stone(s.index))
 		if not s.gen_charge and hp >= float(tuning.charge_hp) and with_troops:
 			sim.set_general_charge(side_id, true)
 		elif s.gen_charge and not with_troops:
