@@ -42,6 +42,8 @@ var _prev := {}  # unit id -> Vector2 position at the previous step
 var _died_at := {}  # unit id -> view clock when it died
 var _born_at := {}  # unit id -> view clock when it split off
 var _hurt_at := {}  # unit id -> view clock when it was last hit (troop HP bars show briefly)
+var _wall_hurt_at := {}  # wall index -> view clock when it was last hit (HP bar + flash)
+var _broke_at := {}  # wall index -> view clock when it fell
 ## Troop HP bars only show for this long after a hit: with armies of 30 a bar
 ## over every soldier is noise (DF shows none); a short one marks who is hurt.
 const HURT_BAR_TIME := 1.2
@@ -194,6 +196,18 @@ func handle_events(events: Array) -> void:
 				else:
 					_fx.append({"kind": "burst", "pos": Vector2(e.x, e.y - 8), "t0": _clock, "dur": 0.4,
 							"col": _special_color(by)})
+			"wallhit":
+				_wall_hurt_at[e.wall] = _clock
+				_fx.append({"kind": "spark", "pos": Vector2(e.x - float(sim.walls[e.wall].out) * 6.0, e.y - 10),
+						"t0": _clock, "dur": 0.2})
+			"wallbreak":
+				_broke_at[e.wall] = _clock
+				var yy := float(e.y0)
+				while yy < float(e.y1):
+					_fx.append({"kind": "dust", "pos": Vector2(e.x, yy), "t0": _clock, "dur": 0.9})
+					yy += 9.0
+				_flash = 0.12
+				_flash_col = Color(0.85, 0.8, 0.7)
 			"die":
 				_died_at[e.id] = _clock
 				_fx.append({"kind": "poof", "pos": Vector2(e.x, e.y - 6), "t0": _clock, "dur": 0.35})
@@ -531,9 +545,14 @@ func _draw() -> void:
 	for u in sim.units:
 		if u.alive or _clock - _died_at.get(u.id, _clock) < 0.6:
 			order.append(u)
+	order.append_array(_wall_items())
 	order.sort_custom(func(a, b): return a.y < b.y)
 	for u in order:
-		_draw_unit(u)
+		if u is Dictionary:
+			_draw_wall_item(u)
+		else:
+			_draw_unit(u)
+	_draw_wall_bars()
 	for s in sim.sides:
 		if not s.wave.is_empty() and s.special.get("type", "wave") == "charge":
 			_draw_wave(s)
@@ -579,6 +598,15 @@ func _draw_radar() -> void:
 			draw_rect(Rect2(p - Vector2(1, 1), Vector2(3, 3)), col.lightened(0.4))
 		else:
 			draw_rect(Rect2(p, Vector2(1, 1)), col)
+	for wl in sim.walls:
+		if wl.kind == "gate":
+			continue
+		var a: Vector2 = to_radar.call(Vector2(float(wl.front), maxf(float(wl.y0), y0)))
+		var b: Vector2 = to_radar.call(Vector2(float(wl.front), minf(float(wl.y1), y1)))
+		var wc := Color(0.75, 0.7, 0.62) if wl.kind == "wall" and float(wl.hp) > 0.0 else Color(0.45, 0.4, 0.35)
+		if wl.kind == "stakes":
+			wc = Color(0.6, 0.42, 0.25)
+		draw_line(a, b, wc, 1.0)
 	var vx := RADAR.position.x + cam.x / w * RADAR.size.x
 	var vw := minf(view_size().x, w) / w * RADAR.size.x
 	draw_rect(Rect2(vx, RADAR.position.y, vw, RADAR.size.y), Color(1, 1, 1, 0.55), false, 1.0)
@@ -940,8 +968,8 @@ func _draw_shots() -> void:
 		var b := Vector2(sh.tx, sh.ty - 8.0)
 		var lift := float(sh.arc) * 4.0 * k * (1.0 - k)
 		var p := a.lerp(b, k) - Vector2(0, lift)
-		var shooter = sim.units[sh.by]
-		if shooter.kind == "mage":
+		var shooter = sim.units[sh.by] if int(sh.by) >= 0 else null
+		if shooter != null and shooter.kind == "mage":
 			draw_circle(p, 2.5, Color(MAGE_ORB, 0.35))
 			draw_circle(p, 1.5, MAGE_ORB.lightened(0.3))
 		else:
@@ -1026,6 +1054,8 @@ func _draw_fx(f: Dictionary) -> void:
 			draw_arc(f.pos, 4.0 + k * 10.0, 0, TAU, 16, Color(f.get("col", WAVE), 1.0 - k), 2.0)
 		"poof":
 			draw_arc(f.pos, 3.0 + k * 9.0, 0, TAU, 12, Color(1, 1, 1, 0.8 * (1.0 - k)), 1.0)
+		"dust":
+			draw_circle(f.pos - Vector2(0, 6.0 + k * 10.0), 3.0 + k * 9.0, Color(0.72, 0.66, 0.56, 0.6 * (1.0 - k)))
 		"sprite":
 			_draw_fx_sprite(f.id, _clock - f.t0, f.pos, f.facing, Color(1, 1, 1, 1))
 
@@ -1535,3 +1565,176 @@ func _draw_sprite(u, p: Vector2, fade: float, flash: bool, scale: float, on_fiel
 		draw_texture_rect_region(a.tex, dst, src, Color(3, 3, 3, 0.6 * fade))
 	draw_set_transform(Vector2.ZERO)
 	return true
+
+
+# --- castle walls in the field (BattleSim.walls / towers) ----------------------------
+# Drawn y-sorted with the units, one slice per few px of depth: a stone wall is
+# a stack of slices whose caps read as brick courses with merlons on top; it
+# cracks as it loses HP and drops to a rubble heap when it falls. A gate is two
+# pillars with open doors, a palisade a double row of stakes leaning at the
+# enemy, a tower stands on its wall segment (a stub once that segment falls).
+
+const WALL_H := 18.0
+const WALL_PAD := 3.0  # drawn this much wider than the sim's band on each side
+const WALL_STEP := 5.0
+const STONE := Color("8c857a")
+const STONE_TOP := Color("b6ad9c")
+const STONE_DARK := Color("5d574f")
+const RUBBLE := Color("6b6358")
+const WOOD := Color("7a4e2a")
+const WOOD_TOP := Color("b0814c")
+const TOWER_H := 38.0
+
+
+## Draw items for the walls: {y (sort key), wall: index, part, ...}.
+func _wall_items() -> Array:
+	var out: Array = []
+	for wi in sim.walls.size():
+		var w: Dictionary = sim.walls[wi]
+		match str(w.kind):
+			"wall":
+				var y := float(w.y0) + WALL_STEP
+				while y < float(w.y1) + WALL_STEP:
+					out.append({"y": minf(y, float(w.y1)), "wall": wi, "part": "slice"})
+					y += WALL_STEP
+			"gate":
+				out.append({"y": float(w.y0) + 3.0, "wall": wi, "part": "pillar", "door": 1.0})
+				out.append({"y": float(w.y1) - 1.0, "wall": wi, "part": "pillar", "door": -1.0})
+			"stakes":
+				var y := float(w.y0) + 4.0
+				var k := 0
+				while y < float(w.y1):
+					out.append({"y": y, "wall": wi, "part": "stake", "row": k % 2})
+					y += 4.0
+					k += 1
+	for ti in sim.towers.size():
+		var t: Dictionary = sim.towers[ti]
+		out.append({"y": float(t.y) + 2.0, "wall": int(t.seg), "part": "tower", "tower": ti})
+	return out
+
+
+func _draw_wall_item(it: Dictionary) -> void:
+	var w: Dictionary = sim.walls[int(it.wall)]
+	match str(it.part):
+		"slice":
+			_draw_wall_slice(w, int(it.wall), float(it.y))
+		"pillar":
+			_draw_gate_pillar(w, float(it.y), float(it.door))
+		"stake":
+			_draw_stake(w, float(it.y), int(it.row))
+		"tower":
+			_draw_tower(w, sim.towers[int(it.tower)])
+
+
+func _draw_wall_slice(w: Dictionary, wi: int, y: float) -> void:
+	var x0 := float(w.x0) - WALL_PAD
+	var wd := float(w.x1) - float(w.x0) + WALL_PAD * 2.0
+	var hp := float(w.hp)
+	var r := hp / maxf(1.0, float(w.max_hp))
+	var course := int(floor(y / WALL_STEP))
+	if hp <= 0.0:
+		# rubble heap, settling in over the first half second after it fell
+		var k := clampf((_clock - float(_broke_at.get(wi, -9.0))) / 0.5, 0.0, 1.0)
+		var h := lerpf(WALL_H, 7.0, k) if _broke_at.has(wi) else 7.0
+		var hh := h - float(course % 3) * 1.5
+		var spread := 3.0 + float(course % 2) * 2.0
+		draw_rect(Rect2(x0 - spread, y - hh * 0.5, wd + spread * 2.0, hh * 0.5), RUBBLE.darkened(0.15))
+		draw_rect(Rect2(x0 - 1.0, y - hh, wd + 2.0, hh * 0.6), RUBBLE)
+		draw_rect(Rect2(x0 + float((course * 7) % int(wd)), y - hh, 4, 3), STONE_TOP)
+		draw_rect(Rect2(x0 - spread + float((course * 5) % int(wd + spread)), y - 3.0, 3, 2), STONE)
+		draw_rect(Rect2(x0 + float((course * 3) % int(wd)), y - hh * 0.5, 2, 2), STONE_DARK)
+		return
+	var h := WALL_H - (3.0 if r < 0.34 else 0.0)
+	var fl: float = _clock - float(_wall_hurt_at.get(wi, -9.0))
+	var body := STONE
+	var top := STONE_TOP
+	if fl < 0.1:
+		body = body.lerp(Color.WHITE, 0.45)
+		top = top.lerp(Color.WHITE, 0.45)
+	draw_rect(Rect2(x0, y - h, wd, h), body)
+	draw_rect(Rect2(x0, y - h, wd, 2), top)
+	if course % 2 == 0:
+		draw_rect(Rect2(x0 + 1.0, y - h - 2.0, wd - 2.0, 2), top)  # merlon
+	# shade the face toward the enemy, mortar line on the front of the course
+	var face := x0 + wd - 1.0 if float(w.out) > 0.0 else x0
+	draw_rect(Rect2(face, y - h, 1, h), STONE_DARK)
+	draw_rect(Rect2(x0, y - 1.0, wd, 1), STONE_DARK)
+	# cracks as it loses HP (same spots every frame)
+	if r < 0.67 and course % 3 == 1:
+		var cx := x0 + 2.0 + float((course * 3) % int(maxf(1.0, wd - 4.0)))
+		draw_line(Vector2(cx, y - h + 3.0), Vector2(cx + 2.0, y - h + 8.0), STONE_DARK, 1.0)
+	if r < 0.34 and course % 3 == 2:
+		var cx2 := x0 + 1.0 + float((course * 5) % int(maxf(1.0, wd - 3.0)))
+		draw_line(Vector2(cx2, y - h + 2.0), Vector2(cx2 - 2.0, y - 4.0), Color(0.2, 0.18, 0.16), 1.0)
+
+
+## A gate edge: a pillar a little taller than the wall, a door swung open inward.
+func _draw_gate_pillar(w: Dictionary, y: float, door: float) -> void:
+	var x0 := float(w.x0) - WALL_PAD - 1.0
+	var wd := float(w.x1) - float(w.x0) + WALL_PAD * 2.0 + 2.0
+	var h := WALL_H + 6.0
+	draw_rect(Rect2(x0, y - h, wd, h), STONE)
+	draw_rect(Rect2(x0, y - h, wd, 2), STONE_TOP)
+	draw_rect(Rect2(x0 + 1.0, y - h - 3.0, 3, 3), STONE_TOP)
+	draw_rect(Rect2(x0 + wd - 4.0, y - h - 3.0, 3, 3), STONE_TOP)
+	draw_rect(Rect2(x0, y - 1.0, wd, 1), STONE_DARK)
+	# door: a plank leaf hinged here, swung back toward the defenders
+	var inward := -float(w.out)
+	var hx := float(w.front) - float(w.out) * (float(w.x1) - float(w.x0)) * 0.5
+	var dx1 := hx + inward * 12.0
+	var dy := y + door * 4.0
+	draw_colored_polygon(PackedVector2Array([Vector2(hx, y - 13.0), Vector2(dx1, dy - 13.0),
+			Vector2(dx1, dy), Vector2(hx, y)]), WOOD)
+	draw_line(Vector2(hx, y - 7.0), Vector2(dx1, dy - 7.0), WOOD_TOP, 1.0)
+
+
+## One palisade stake, leaning toward the enemy; two staggered rows.
+func _draw_stake(w: Dictionary, y: float, row: int) -> void:
+	var out := float(w.out)
+	var cx := (float(w.x0) + float(w.x1)) * 0.5 + (2.5 if row == 0 else -2.5) * out
+	var tip := Vector2(cx + out * 4.0, y - 12.0)
+	draw_line(Vector2(cx, y), tip, WOOD, 2.0)
+	draw_line(tip - Vector2(out * 1.0, -2.0), tip, WOOD_TOP, 1.0)
+
+
+## A tower on its wall segment: square body, slit window, merlons, a pennant in
+## its side's colour. A low ruin once its segment has fallen.
+func _draw_tower(w: Dictionary, t: Dictionary) -> void:
+	var cx := float(t.x)
+	var y := float(t.y)
+	var wd := 22.0
+	var x0 := cx - wd * 0.5
+	if float(w.hp) <= 0.0:
+		draw_rect(Rect2(x0, y - 12.0, wd, 12.0), RUBBLE)
+		draw_rect(Rect2(x0 + 2.0, y - 16.0, 7, 4), RUBBLE)
+		draw_rect(Rect2(x0 + 12.0, y - 14.0, 6, 2), STONE_TOP)
+		return
+	var h := TOWER_H
+	draw_rect(Rect2(x0, y - h, wd, h), STONE)
+	draw_rect(Rect2(x0, y - h, wd, 2), STONE_TOP)
+	for k in 4:
+		draw_rect(Rect2(x0 + 1.0 + k * 5.5, y - h - 3.0, 3.5, 3), STONE_TOP)
+	var face := x0 + wd - 1.0 if float(w.out) > 0.0 else x0
+	draw_rect(Rect2(face, y - h, 1, h), STONE_DARK)
+	for k in 5:
+		draw_rect(Rect2(x0, y - h + 6.0 + k * 6.0, wd, 1), Color(STONE_DARK, 0.6))
+	draw_rect(Rect2(cx - 1.0, y - h + 9.0, 2, 7), Color(0.12, 0.1, 0.1))
+	draw_rect(Rect2(cx - 1.0, y - h + 22.0, 2, 5), Color(0.12, 0.1, 0.1))
+	var col := SLIME if int(t.side) == 0 else Color("4f78d0")
+	var pole := Vector2(cx, y - h - 3.0)
+	draw_line(pole, pole - Vector2(0, 10), Color(0.25, 0.2, 0.15), 1.0)
+	var wave := sin(_clock * 6.0 + cx) * 1.0
+	draw_colored_polygon(PackedVector2Array([pole - Vector2(0, 10), pole - Vector2(-7.0 * float(w.out), 8.0 + wave),
+			pole - Vector2(0, 6)]), col)
+
+
+## HP bar over a wall segment for a moment after it is hit.
+func _draw_wall_bars() -> void:
+	for wi in sim.walls.size():
+		var w: Dictionary = sim.walls[wi]
+		if w.kind != "wall" or float(w.hp) <= 0.0 or _clock - float(_wall_hurt_at.get(wi, -99.0)) > HURT_BAR_TIME * 1.5:
+			continue
+		var cx := (float(w.x0) + float(w.x1)) * 0.5
+		var top := Vector2(cx - 10.0, maxf(float(w.y0), 106.0) - WALL_H - 6.0)
+		draw_rect(Rect2(top, Vector2(20, 2)), HP_BG)
+		draw_rect(Rect2(top, Vector2(20.0 * clampf(float(w.hp) / float(w.max_hp), 0.0, 1.0), 2)), Color("d8cfb8"))

@@ -38,13 +38,13 @@
     "joined_loyalty": 50
   },
   "siege": {
-    "_note": "Walls and siege engines (council actions, one per general like levy). wall_max = highest wall level · wall_take_per_level = damage the troops defending their own castle take less per level (0.1 = -10%; not the general, not the duel; road battles have no walls) · wall_lost_on_capture = levels knocked off when a castle changes hands · engines = false turns engines off · engine_speed = march speed x while dragging one · engine_cancels = wall levels an engine cuts in a battle at a walled castle (then it is spent, won or lost; a castle with no wall leaves it for the next; it is lost too if its general is beaten on a road) · ai_engine_wall = the AI builds an engine when a next-door enemy castle has this wall or more · castle_background = battle ground for castle battles. A castle may set \"wall\" to start with (default 0). Basic values, balance later.",
+    "_note": "Walls and siege engines (council actions, one per general like levy). wall_max = highest wall level · the wall is built in the battle field (battle_config.json walls: Lv1 palisade, Lv2 stone wall closing the top and bottom lanes with a gate in the middle, Lv3 + towers) for the castle's owner only; road battles have no walls · wall_labels = what each level is called on the map · ai_wall_take_per_level = how much the map AI counts a wall when picking targets (defence / (1 - x per level)) · wall_lost_on_capture = levels knocked off when a castle changes hands · engines = false turns engines off · engine_speed = march speed x while dragging one · engine_breach = wall segments an engine breaks before a battle at a walled castle (top lane first; against a palisade it pulls the stakes: no wall) then it is spent, won or lost; a castle with no wall leaves it for the next; it is lost too if its general is beaten on a road · ai_engine_wall = the AI builds an engine when a next-door enemy castle has this wall or more · castle_background = battle ground for castle battles. A castle may set \"wall\" to start with (default 0). Basic values, balance later.",
     "wall_max": 3,
-    "wall_take_per_level": 0.1,
+    "wall_labels": ["", "รั้วไม้", "กำแพงหิน", "กำแพงหิน+หอธนู"], "ai_wall_take_per_level": 0.1,
     "wall_lost_on_capture": 1,
     "engines": true,
     "engine_speed": 0.7,
-    "engine_cancels": 2,
+    "engine_breach": 1,
     "ai_engine_wall": 2,
     "castle_background": "res://assets/backgrounds/field_castle.png"
   },

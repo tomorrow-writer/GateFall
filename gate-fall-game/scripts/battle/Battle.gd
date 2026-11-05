@@ -99,6 +99,11 @@ var _campaign: Node = null
 var _dev_troops := {}
 var _dev_row: HBoxContainer = null
 var _dev_buttons := {}  # side id -> Button
+## Dev: castle wall in the field, index into DEV_WALLS (0 = none).
+var _dev_wall := 0
+## [who, level, breach]: who = "enemy" (we attack a castle) or "player" (we hold one)
+const DEV_WALLS := [["", 0, 0], ["enemy", 1, 0], ["enemy", 2, 0], ["enemy", 3, 0], ["enemy", 3, 1],
+		["player", 1, 0], ["player", 2, 0], ["player", 3, 0]]
 
 
 func _ready() -> void:
@@ -121,6 +126,11 @@ func _ready() -> void:
 			order = sd.order if cfg.orders.has(sd.order) else "charge"
 		else:
 			_enemy_side = sd.id
+	# Defending our own walled castle: start on hold, fighting from the wall
+	# (charge = sally out). The player can change it before the fight.
+	if _campaign != null and int(_campaign.battle.get("mods", {}).get(player_side, {}).get("wall", 0)) > 0 \
+			and cfg.orders.has("hold"):
+		order = "hold"
 
 	var order_group := ButtonGroup.new()
 	_order_buttons = {"charge": charge_btn, "hold": hold_btn, "retreat": retreat_btn}
@@ -288,6 +298,9 @@ func _unhandled_input(event: InputEvent) -> void:
 	if phase == "setup" and dev_mode and k == KEY_8:
 		_cycle_troops(_enemy_side)
 		return
+	if phase == "setup" and dev_mode and k == KEY_9:
+		_cycle_wall()
+		return
 	if phase == "setup" and not menu_open and _picker != null:
 		var step := {KEY_LEFT: -1, KEY_RIGHT: 1, KEY_UP: -FormationPicker.COLS, KEY_DOWN: FormationPicker.COLS}
 		if step.has(k):
@@ -418,10 +431,16 @@ func _new_sim() -> void:
 			var opt := _troop_option(int(_dev_troops[id]))
 			if not opt.is_empty():
 				overrides[id]["units"] = opt.units
+		var dw: Array = DEV_WALLS[_dev_wall]
+		if int(dw[1]) > 0:
+			var wid := _enemy_side if dw[0] == "enemy" else player_side
+			overrides[wid]["wall"] = int(dw[1])
+			overrides[wid]["breach"] = int(dw[2])
+			overrides[wid]["ai_order"] = "hold"
 	if _campaign != null:
 		var troops: Dictionary = _campaign.battle.troops
 		# Castle walls, general level, troop type (WorldSim.battle_mods):
-		# {side: {"wall_take": x, "unit": id, ...}}.
+		# {side: {"wall": level, "breach": n, "unit": id, ...}}.
 		var mods: Dictionary = _campaign.battle.get("mods", {})
 		for sd in cfg.sides:
 			var unit := str(mods.get(sd.id, {}).get("unit", sd.unit))
@@ -467,6 +486,13 @@ func _build_dev_row() -> void:
 		b.pressed.connect(_cycle_troops.bind(id))
 		_dev_row.add_child(b)
 		_dev_buttons[id] = b
+	if _campaign == null and cfg.has("walls"):
+		var wb := Button.new()
+		wb.focus_mode = Control.FOCUS_NONE
+		wb.add_theme_font_size_override("font_size", 7)
+		wb.pressed.connect(_cycle_wall)
+		_dev_row.add_child(wb)
+		_dev_buttons["_wall"] = wb
 	formation_info.get_parent().add_child(_dev_row)
 	_update_dev_row()
 
@@ -490,6 +516,32 @@ func _cycle_troops(id: String) -> void:
 	_pick_formation(formation)
 
 
+## Dev: next castle wall setup (none, enemy Lv1..3, enemy Lv3 + engine, ours Lv1..3).
+func _cycle_wall() -> void:
+	if phase != "setup" or _campaign != null:
+		return
+	_dev_wall = (_dev_wall + 1) % DEV_WALLS.size()
+	if DEV_WALLS[_dev_wall][0] == "player" and _order_buttons.has("hold"):
+		order = "hold"
+		_order_buttons["hold"].set_pressed_no_signal(true)
+	hud.siege_text = _dev_wall_text(true)
+	_update_dev_row()
+	_pick_formation(formation)
+
+
+func _dev_wall_text(long := false) -> String:
+	var dw: Array = DEV_WALLS[_dev_wall]
+	if int(dw[1]) <= 0:
+		return "" if long else "ไม่มี"
+	var levels: Array = cfg.walls.get("levels", [])
+	var label := str(levels[mini(int(dw[1]), levels.size() - 1)].get("label", ""))
+	var who := "ศัตรู" if dw[0] == "enemy" else "เรา"
+	var t := "%s %s Lv%d" % [who, label, int(dw[1])]
+	if int(dw[2]) > 0:
+		t += " +เครื่องตี"
+	return t
+
+
 func _update_dev_row() -> void:
 	if _dev_row == null:
 		return
@@ -497,6 +549,10 @@ func _update_dev_row() -> void:
 	for id in _dev_buttons:
 		if id == "_tag":
 			_dev_buttons[id].set_pressed_no_signal(dev_mode)
+			continue
+		if id == "_wall":
+			_dev_buttons[id].visible = dev_mode
+			_dev_buttons[id].text = "กำแพง: %s [9]" % _dev_wall_text()
 			continue
 		_dev_buttons[id].visible = dev_mode
 		var opt := _troop_option(int(_dev_troops.get(id, -1)))
